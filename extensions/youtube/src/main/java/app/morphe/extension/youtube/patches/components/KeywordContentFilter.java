@@ -226,7 +226,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
         //noinspection StringEquality
         if (rawKeywords == lastKeywordPhrasesParsed) {
-            Logger.printDebug(() -> "Using previously initialized search");
             return;
         }
 
@@ -241,9 +240,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
                 final boolean wholeWordMatching;
                 if (phraseUsesWholeWordSyntax(phrase)) {
-                    if (phrase.length() == 2) {
-                        continue;
-                    }
+                    if (phrase.length() == 2) continue;
                     phrase = stripWholeWordSyntax(phrase);
                     wholeWordMatching = true;
                 } else if (phrase.length() < MINIMUM_KEYWORD_LENGTH && !isLanguageWithNoSpaces(phrase)) {
@@ -264,21 +261,10 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                         phrase.toUpperCase(defaultLocale)
                 };
 
-                if (phrasesWillHideAllVideos(phraseVariations, wholeWordMatching)) {
-                    String toastMessage = (!wholeWordMatching && !phrasesWillHideAllVideos(phraseVariations, true))
-                            ? "morphe_hide_keyword_toast_invalid_common_whole_word_required"
-                            : "morphe_hide_keyword_toast_invalid_common";
-                    Utils.showToastLong(str(toastMessage, phrase));
-                    continue;
-                }
-
                 for (String variation : phraseVariations) {
                     Boolean existing = keywords.get(variation);
                     if (existing == null) {
                         keywords.put(variation, wholeWordMatching);
-                    } else if (existing != wholeWordMatching) {
-                        Utils.showToastLong(str("morphe_hide_keyword_toast_invalid_conflicting", phrase));
-                        break;
                     }
                 }
             }
@@ -289,13 +275,12 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
                 TrieSearch.TriePatternMatchedCallback<byte[]> callback =
                         (textSearched, startIndex, matchLength, callbackParameter) -> {
-                            if (!isMatchValid(textSearched, startIndex, matchLength, keyword, isWholeWord)) {
+                            boolean valid = isMatchValid(textSearched, startIndex, matchLength, keyword, isWholeWord);
+                            Log.d(DEBUG_TAG, "Проверка слова '" + keyword + "' на позиции " + startIndex + " -> " + (valid ? "СКРЫТЬ!" : "пропуск (служебный текст)"));
+                            if (!valid) {
                                 return false;
                             }
 
-                            Logger.printDebug(() -> (isWholeWord ? "Matched whole keyword: '"
-                                    : "Matched keyword: '") + keyword + "'");
-                            //noinspection unchecked
                             ((MutableReference<String>) callbackParameter).value = keyword;
                             return true;
                         };
@@ -303,7 +288,9 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 search.addPattern(stringBytes, callback);
             }
 
-            Logger.printDebug(() -> "Search using: (" + search.getEstimatedMemorySize() + " KB) keywords: " + keywords.keySet());
+            // БЕЗУСЛОВНЫЙ ЛОГ И ТОАСТ ПРИ ИНИЦИАЛИЗАЦИИ
+            Log.e(DEBUG_TAG, ">>> ФИЛЬТР ИНИЦИАЛИЗИРОВАН! Слова: " + keywords.keySet());
+            Utils.showToastLong("[Debug] Фильтр активен: " + keywords.keySet());
         }
 
         bufferSearch = search;
@@ -356,15 +343,17 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     protected String matchBuffer(byte[] buffer, StringFilterGroup matchedGroup) {
         ByteTrieSearch search = bufferSearch;
         if (search == null) return null;
+
         MutableReference<String> matchRef = new MutableReference<>();
-        if (!search.matches(buffer, matchRef)) return null;
+        if (!search.matches(buffer, matchRef)) {
+            return null;
+        }
 
         String keyword = matchRef.value;
         recordHide(matchedGroup, buffer);
 
-        // DEBUG: логирование в Logcat и показ тоста на экране
         String snippet = extractSnippetForDebug(buffer, keyword);
-        Log.e(DEBUG_TAG, "FILTERED! keyword='" + keyword + "', in text: '" + snippet + "'");
+        Log.e(DEBUG_TAG, "!!! ВИДЕО СКРЫТО по слову [" + keyword + "], фрагмент: '" + snippet + "'");
 
         long now = System.currentTimeMillis();
         if (now - lastToastTimestamp > 1500) {
