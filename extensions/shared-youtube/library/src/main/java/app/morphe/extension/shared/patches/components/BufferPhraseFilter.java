@@ -119,8 +119,9 @@ public abstract class BufferPhraseFilter extends Filter {
 
     protected BufferPhraseFilter(StringFilterGroup... extraPathCallbacks) {
         StringFilterGroup[] all = new StringFilterGroup[2 + extraPathCallbacks.length];
-        all[0] = startsWithFilter;
-        all = containsFilter;
+        int idx = 0;
+        all[idx++] = startsWithFilter;
+        all[idx++] = containsFilter;
         System.arraycopy(extraPathCallbacks, 0, all, 2, extraPathCallbacks.length);
         addPathCallbacks(all);
     }
