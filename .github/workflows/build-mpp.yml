@@ -1,0 +1,36 @@
+name: Build Morphe Patches (.mpp)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Build Android Patches Package
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x gradlew
+          ./gradlew buildAndroid
+
+      - name: Upload MPP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: morphe-patches-package
+          path: patches/build/libs/*.mpp
