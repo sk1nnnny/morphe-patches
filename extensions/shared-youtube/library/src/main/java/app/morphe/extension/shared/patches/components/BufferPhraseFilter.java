@@ -164,7 +164,7 @@ public abstract class BufferPhraseFilter extends Filter {
             updateStats(true, matched);
             onHideConfirmed(matched);
 
-            // DEBUG: гарантированный вывод в Logcat и Toast на экран телефона
+            // DEBUG: гарантированный вывод в Logcat и Toast на экран
             Log.e(DEBUG_TAG, "!!! ВИДЕО СКРЫТО фильтром: [" + matched + "]");
             long now = System.currentTimeMillis();
             if (now - lastToastTime > 1500) {
@@ -291,10 +291,11 @@ public abstract class BufferPhraseFilter extends Filter {
         if (cp == null) {
             return false;
         }
-        if (Character.isWhitespace(cp)) {
+        int c = cp;
+        if (Character.isWhitespace(c)) {
             return true;
         }
-        return switch (cp) {
+        return switch (c) {
             case '.', ',', '!', '?', ':', ';', '"', '\'', '(', ')', '[', ']', '{', '}',
                  '«', '»', '—', '–', '-', '…' -> true;
             default -> false;
