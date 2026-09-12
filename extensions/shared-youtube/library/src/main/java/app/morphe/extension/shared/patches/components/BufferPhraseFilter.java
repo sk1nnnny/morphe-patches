@@ -2,21 +2,6 @@
  * Copyright 2026 Morphe.
  * https://github.com/MorpheApp/morphe-patches
  *
- * Original first edition code:
- * https://github.com/ReVanced/revanced-integrations/pull/584
- * https://github.com/ReVanced/revanced-integrations/commit/0cbad9820577c476f1f29b6ac77611b38afbb950
- * https://github.com/ReVanced/revanced-integrations/commit/1ee99aa6f0b4af15eeca25c7e21e8a0f5e9d189a
- * https://github.com/ReVanced/revanced-integrations/commit/c3bfa77d62b15dedfed8f697583f2f0805f0c2c1
- * https://github.com/ReVanced/revanced-integrations/commit/75fa5797f70123f68d4676201503cf35dcef46dc
- * https://github.com/ReVanced/revanced-integrations/commit/3a3ceec4b596354dcccbf3516ef1634bd8819b90
- * https://github.com/ReVanced/revanced-integrations/commit/cda1f3160c12d239df1183799ead39526cbac20f
- * https://github.com/ReVanced/revanced-integrations/commit/d8d2a852d3879060bd95cc43d66c7cf195e82b43
- * https://github.com/ReVanced/revanced-integrations/commit/2f2eeea5a722b6b7053eb2825d16fa37938b4e9e
- * https://github.com/ReVanced/revanced-integrations/commit/5314dd90d16dc8565331c4cddce114956d85a173
- * https://github.com/MorpheApp/morphe-patches/commit/f5371ca998c019609c2b5558b3408ab1fec065c8
- * https://github.com/MorpheApp/morphe-patches/commit/017eac71a3f9542b8ad6221e3600797d6b97fae4
- * https://github.com/MorpheApp/morphe-patches/pull/1972
- *
  * See the included NOTICE file for GPLv3 Section 7 terms that apply to Morphe contributions.
  */
 
@@ -30,6 +15,8 @@ import static java.lang.Character.UnicodeBlock.LAO;
 import static java.lang.Character.UnicodeBlock.MYANMAR;
 import static java.lang.Character.UnicodeBlock.THAI;
 import static java.lang.Character.UnicodeBlock.TIBETAN;
+
+import android.util.Log;
 
 import androidx.annotation.Nullable;
 
@@ -48,23 +35,23 @@ import app.morphe.extension.shared.Utils;
 @SuppressWarnings("unused")
 public abstract class BufferPhraseFilter extends Filter {
 
+    private static final String DEBUG_TAG = "KeywordFilter";
+    private static volatile long lastToastTime = 0;
+
     /**
      * Strings found in the buffer for every video. Full strings should be specified.
-     * <p>
-     * This list does not include every common buffer string, and this can be added/changed as needed.
-     * Words must be entered with the exact casing as found in the buffer.
      */
     public static final String[] STRINGS_IN_EVERY_BUFFER = {
             // Video playback data.
-            "googlevideo.com/initplayback?source=youtube", // Video url.
-            "ANDROID", // Video url parameter.
-            "https://i.ytimg.com/vi/", // Thumbnail url.
+            "googlevideo.com/initplayback?source=youtube",
+            "ANDROID",
+            "https://i.ytimg.com/vi/",
             "mqdefault.jpg",
             "hqdefault.jpg",
             "sddefault.jpg",
             "hq720.jpg",
             "webp",
-            "_custom_", // Custom thumbnail set by video creator.
+            "_custom_",
             // Video decoders.
             "OMX.ffmpeg.vp9.decoder",
             "OMX.Intel.sw_vd.vp9",
@@ -83,7 +70,7 @@ public abstract class BufferPhraseFilter extends Filter {
             "FEsubscriptions",
             "search_vwc_description_transition_key",
             "g-high-recZ",
-            // Text and litho components found in the buffer that belong to path filters.
+            // Text and litho components.
             "expandable_metadata.e",
             "thumbnail.e",
             "avatar.e",
@@ -94,29 +81,17 @@ public abstract class BufferPhraseFilter extends Filter {
             "sans-serif"
     };
 
-    /**
-     * Threshold for {@link #filteredVideosPercentage} that indicates all or nearly all
-     * videos have been filtered. Close to 100% to reduce false positives.
-     */
     private static final float ALL_VIDEOS_FILTERED_THRESHOLD = 0.95f;
-
     private static final float ALL_VIDEOS_FILTERED_SAMPLE_SIZE = 50;
-
-    private static final long ALL_VIDEOS_FILTERED_BACKOFF_MILLISECONDS = 60 * 1000; // 60 seconds
-
+    private static final long ALL_VIDEOS_FILTERED_BACKOFF_MILLISECONDS = 60 * 1000;
     private static final int UTF8_MAX_BYTE_COUNT = 4;
 
-    /**
-     * Substrings that are always first in the identifier - the standard feed / search /
-     * subscription / related video card containers.
-     */
     protected final StringFilterGroup startsWithFilter = new StringFilterGroup(
-            null, // Multiple settings are used and must be individually checked if active.
+            null,
             "home_video_with_context.e",
             "search_video_with_context.e",
-            "video_with_context.e", // Subscription tab videos.
+            "video_with_context.e",
             "related_video_with_context.e",
-            // A/B test for subscribed video, and sometimes when tablet layout is enabled.
             "video_lockup_with_attachment.e",
             "compact_video.e",
             "inline_shorts",
@@ -124,24 +99,14 @@ public abstract class BufferPhraseFilter extends Filter {
             "shorts_pivot_item.e"
     );
 
-    /**
-     * Substrings that are never at the start of the path.
-     */
     @SuppressWarnings("FieldCanBeLocal")
     protected final StringFilterGroup containsFilter = new StringFilterGroup(
             null,
             "modern_type_shelf_header_content.e",
-            "shorts_lockup_cell.e", // Part of 'shorts_shelf_carousel.e'
-            "video_card.e" // Shorts that appear in a horizontal shelf.
+            "shorts_lockup_cell.e",
+            "video_card.e"
     );
 
-    /**
-     * Path components to not filter. Cannot filter the buffer when these are present,
-     * otherwise text in UI controls can be filtered as a keyword (such as using "Playlist" as a keyword).
-     * <p>
-     * This is also a small performance improvement since the buffer of the parent component was
-     * already searched and passed.
-     */
     private final StringTrieSearch exceptions = new StringTrieSearch(
             "metadata.e",
             "thumbnail.e",
@@ -149,51 +114,23 @@ public abstract class BufferPhraseFilter extends Filter {
             "overflow_button.e"
     );
 
-    /**
-     * Rolling average of how many videos were filtered by a phrase.
-     * Used to detect if a phrase passes the initial check against {@link #STRINGS_IN_EVERY_BUFFER}
-     * but a phrase is still hiding all videos.
-     */
     private volatile float filteredVideosPercentage;
-
-    /**
-     * If filtering is temporarily turned off, the time to resume filtering.
-     * Field is zero if no backoff is in effect.
-     */
     private volatile long timeToResumeFiltering;
 
     protected BufferPhraseFilter(StringFilterGroup... extraPathCallbacks) {
         StringFilterGroup[] all = new StringFilterGroup[2 + extraPathCallbacks.length];
         all[0] = startsWithFilter;
-        all[1] = containsFilter;
+        all = containsFilter;
         System.arraycopy(extraPathCallbacks, 0, all, 2, extraPathCallbacks.length);
         addPathCallbacks(all);
     }
 
-    /**
-     * Called before each match attempt so the subclass can rebuild its search structures
-     * if the underlying settings changed since the last call.
-     */
     protected abstract void reparseIfNeeded();
-
-    /**
-     * @return whether filtering is active for the current feed / search context.
-     * Only consulted when the matched group is {@link #startsWithFilter} or
-     * {@link #containsFilter}. Extra path callbacks are assumed to be self-gated
-     * by their own {@link app.morphe.extension.shared.settings.BooleanSetting}.
-     */
     protected abstract boolean isActiveForFeedContext();
 
-    /**
-     * @return the matched phrase if the buffer contains a match, or {@code null} otherwise.
-     * Called after the path-exception check has passed.
-     */
     @Nullable
     protected abstract String matchBuffer(byte[] buffer, StringFilterGroup matchedGroup);
 
-    /**
-     * Optional hook invoked when a hide is confirmed. Subclasses can override to record stats.
-     */
     protected void onHideConfirmed(String matched) {
         // Default no-op.
     }
@@ -219,13 +156,22 @@ public abstract class BufferPhraseFilter extends Filter {
         }
 
         if (exceptions.matches(path)) {
-            return false; // Do not update statistics.
+            return false;
         }
 
         String matched = matchBuffer(buffer, matchedGroup);
         if (matched != null) {
             updateStats(true, matched);
             onHideConfirmed(matched);
+
+            // DEBUG: гарантированный вывод в Logcat и Toast на экран телефона
+            Log.e(DEBUG_TAG, "!!! ВИДЕО СКРЫТО фильтром: [" + matched + "]");
+            long now = System.currentTimeMillis();
+            if (now - lastToastTime > 1500) {
+                lastToastTime = now;
+                Utils.showToastLong("Скрыто: [" + matched + "]");
+            }
+
             return true;
         }
 
@@ -237,10 +183,6 @@ public abstract class BufferPhraseFilter extends Filter {
         return group == startsWithFilter || group == containsFilter;
     }
 
-    /**
-     * Wraps {@link #isActiveForFeedContext()} with the shared backoff timer used by
-     * broad-filter detection.
-     */
     private boolean isActiveForFeedContextGuarded() {
         if (timeToResumeFiltering != 0) {
             if (System.currentTimeMillis() < timeToResumeFiltering) {
@@ -265,33 +207,22 @@ public abstract class BufferPhraseFilter extends Filter {
             return;
         }
 
-        // A phrase is hiding everything. Inform the user, and temporarily turn off filtering.
         timeToResumeFiltering = System.currentTimeMillis() + ALL_VIDEOS_FILTERED_BACKOFF_MILLISECONDS;
-
         Logger.printDebug(() -> "Temporarily turning off filtering due to excessively broad match: " + matched);
         onBroadFilterDetected(matched);
     }
 
-    /**
-     * Called when the rolling average of hides exceeds the broad-filter threshold.
-     * Default shows no toast; subclasses that surface user-input phrases (e.g.
-     * KeywordContentFilter) can override to warn the user.
-     */
     protected void onBroadFilterDetected(@Nullable String matched) {
         // Default no-op.
     }
 
-    /**
-     * @return If the string contains any characters from languages that do not use spaces between words.
-     */
     public static boolean isLanguageWithNoSpaces(String text) {
         for (int i = 0, length = text.length(); i < length;) {
             final int codePoint = text.codePointAt(i);
-
             Character.UnicodeBlock block = Character.UnicodeBlock.of(codePoint);
-            if (block == CJK_UNIFIED_IDEOGRAPHS // Chinese and Kanji
-                    || block == HIRAGANA // Japanese Hiragana
-                    || block == KATAKANA // Japanese Katakana
+            if (block == CJK_UNIFIED_IDEOGRAPHS
+                    || block == HIRAGANA
+                    || block == KATAKANA
                     || block == THAI
                     || block == LAO
                     || block == MYANMAR
@@ -299,38 +230,23 @@ public abstract class BufferPhraseFilter extends Filter {
                     || block == TIBETAN) {
                 return true;
             }
-
             i += Character.charCount(codePoint);
         }
-
         return false;
     }
 
-    /**
-     * Change first letter of the first word to use title case.
-     */
     public static String titleCaseFirstWordOnly(String sentence) {
-        if (sentence.isEmpty()) {
-            return sentence;
-        }
+        if (sentence.isEmpty()) return sentence;
         final int firstCodePoint = sentence.codePointAt(0);
-        // In some non-English languages title case is different from uppercase.
         return new StringBuilder()
                 .appendCodePoint(Character.toTitleCase(firstCodePoint))
                 .append(sentence, Character.charCount(firstCodePoint), sentence.length())
                 .toString();
     }
 
-    /**
-     * Uppercase the first letter of each word.
-     */
     public static String capitalizeAllFirstLetters(String sentence) {
-        if (sentence.isEmpty()) {
-            return sentence;
-        }
-
+        if (sentence.isEmpty()) return sentence;
         final int delimiter = ' ';
-        // Use code points and not characters to handle Unicode surrogates.
         int[] codePoints = sentence.codePoints().toArray();
         boolean capitalizeNext = true;
         for (int i = 0, length = codePoints.length; i < length; i++) {
@@ -342,14 +258,9 @@ public abstract class BufferPhraseFilter extends Filter {
                 capitalizeNext = false;
             }
         }
-
         return new String(codePoints, 0, codePoints.length);
     }
 
-    /**
-     * @return If any of the given phrases would match a string in {@link #STRINGS_IN_EVERY_BUFFER}
-     * (which would cause the filter to hide all videos).
-     */
     public static boolean phrasesWillHideAllVideos(String[] phrases, boolean matchWholeWords) {
         for (String phrase : phrases) {
             for (String commonString : STRINGS_IN_EVERY_BUFFER) {
@@ -359,11 +270,9 @@ public abstract class BufferPhraseFilter extends Filter {
                     while (true) {
                         matchIndex = commonString.indexOf(phrase, matchIndex);
                         if (matchIndex < 0) break;
-
                         if (keywordMatchIsWholeWord(commonStringBytes, matchIndex, phrase.length())) {
                             return true;
                         }
-
                         matchIndex++;
                     }
                 } else if (Utils.containsAny(commonString, phrases)) {
@@ -371,33 +280,44 @@ public abstract class BufferPhraseFilter extends Filter {
                 }
             }
         }
-
         return false;
     }
 
     /**
-     * @return If the start and end indexes are not surrounded by other letters.
-     *         If the indexes are surrounded by numbers/symbols/punctuation it is considered a whole word.
+     * Границей слова могут быть ТОЛЬКО пробелы и естественная пунктуация предложения.
+     * Бинарные байты, цифры и символы URL (_, /, &, =, +, %) границами слова НЕ являются.
+     */
+    private static boolean isWordBoundary(@Nullable Integer cp) {
+        if (cp == null) {
+            return false;
+        }
+        if (Character.isWhitespace(cp)) {
+            return true;
+        }
+        return switch (cp) {
+            case '.', ',', '!', '?', ':', ';', '"', '\'', '(', ')', '[', ']', '{', '}',
+                 '«', '»', '—', '–', '-', '…' -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Проверяет, что ключевое слово является самостоятельным отдельным словом в человеческом тексте.
      */
     public static boolean keywordMatchIsWholeWord(byte[] text, int keywordStartIndex, int keywordLength) {
         final Integer codePointBefore = getUtf8CodePointBefore(text, keywordStartIndex);
-        if (codePointBefore != null && Character.isLetter(codePointBefore)) {
+        if (!isWordBoundary(codePointBefore)) {
             return false;
         }
 
         final Integer codePointAfter = getUtf8CodePointAt(text, keywordStartIndex + keywordLength);
-        //noinspection RedundantIfStatement
-        if (codePointAfter != null && Character.isLetter(codePointAfter)) {
+        if (!isWordBoundary(codePointAfter)) {
             return false;
         }
 
         return true;
     }
 
-    /**
-     * @return The UTF8 character point immediately before the index,
-     *         or null if the bytes before the index is not a valid UTF8 character.
-     */
     @Nullable
     public static Integer getUtf8CodePointBefore(byte[] data, int index) {
         int characterByteCount = 0;
@@ -406,14 +326,9 @@ public abstract class BufferPhraseFilter extends Filter {
                 return decodeUtf8ToCodePoint(data, index, characterByteCount);
             }
         }
-
         return null;
     }
 
-    /**
-     * @return The UTF8 character point at the index,
-     *         or null if the index holds no valid UTF8 character.
-     */
     @Nullable
     public static Integer getUtf8CodePointAt(byte[] data, int index) {
         int characterByteCount = 0;
@@ -423,23 +338,22 @@ public abstract class BufferPhraseFilter extends Filter {
                 return decodeUtf8ToCodePoint(data, index, characterByteCount);
             }
         }
-
         return null;
     }
 
     public static boolean isValidUtf8(byte[] data, int startIndex, int numberOfBytes) {
         switch (numberOfBytes) {
             case 1 -> {
-                return (data[startIndex] & 0x80) == 0; // 0xxxxxxx (ASCII)
+                return (data[startIndex] & 0x80) == 0;
             }
             case 2 -> {
                 return (data[startIndex] & 0xE0) == 0xC0
-                        && (data[startIndex + 1] & 0xC0) == 0x80; // 110xxxxx, 10xxxxxx
+                        && (data[startIndex + 1] & 0xC0) == 0x80;
             }
             case 3 -> {
                 return (data[startIndex] & 0xF0) == 0xE0
                         && (data[startIndex + 1] & 0xC0) == 0x80
-                        && (data[startIndex + 2] & 0xC0) == 0x80; // 1110xxxx, 10xxxxxx, 10xxxxxx
+                        && (data[startIndex + 2] & 0xC0) == 0x80;
             }
             case 4 -> {
                 return (data[startIndex] & 0xF8) == 0xF0
@@ -448,7 +362,6 @@ public abstract class BufferPhraseFilter extends Filter {
                         && (data[startIndex + 3] & 0xC0) == 0x80;
             }
         }
-
         throw new IllegalArgumentException("numberOfBytes: " + numberOfBytes);
     }
 
@@ -476,30 +389,15 @@ public abstract class BufferPhraseFilter extends Filter {
         throw new IllegalArgumentException("numberOfBytes: " + numberOfBytes);
     }
 
-    /**
-     * The user-visible surface where a hide happened. Subclasses that want per-source
-     * stats determine the value from the matched group plus current player/navigation state,
-     * then pass it to their own tracker.
-     */
     public enum Source {
         HOME, SUBSCRIPTIONS, SEARCH, COMMENTS;
-
         public static final Source[] VALUES = values();
     }
 
-    /** YouTube video IDs are 11 chars from the base64-url alphabet. */
     public static final int VIDEO_ID_LENGTH = 11;
-
-    /** Byte sequence that precedes the video ID inside the buffer's thumbnail URL. */
     public static final byte[] THUMBNAIL_URL_PREFIX =
             "https://i.ytimg.com/vi/".getBytes(StandardCharsets.US_ASCII);
 
-    /**
-     * @return the first video ID found in the buffer via the thumbnail URL prefix,
-     * or {@code null} if none is present (e.g. comment threads that carry no thumbnail).
-     * Callers who need a video ID in comment context should fall back to the currently
-     * open player's video ID.
-     */
     @Nullable
     public static String extractVideoIdFromBuffer(byte[] buffer) {
         final byte[] prefix = THUMBNAIL_URL_PREFIX;
@@ -525,11 +423,6 @@ public abstract class BufferPhraseFilter extends Filter {
                 || b == '-' || b == '_';
     }
 
-    /**
-     * Simple non-atomic wrapper for capturing a match value from a trie callback.
-     * Used because {@link java.util.concurrent.atomic.AtomicReference#setPlain(Object)}
-     * is not available on Android 8.0.
-     */
     public static final class MutableReference<T> {
         public T value;
     }
