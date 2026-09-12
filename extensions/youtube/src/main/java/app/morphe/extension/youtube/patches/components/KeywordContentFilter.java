@@ -9,6 +9,8 @@ package app.morphe.extension.youtube.patches.components;
 
 import static app.morphe.extension.shared.StringRef.str;
 
+import android.util.Log;
+
 import androidx.annotation.Nullable;
 
 import java.nio.charset.StandardCharsets;
@@ -36,6 +38,8 @@ import app.morphe.extension.youtube.shared.PlayerType;
 public final class KeywordContentFilter extends BufferPhraseFilter {
 
     private static final int MINIMUM_KEYWORD_LENGTH = 3;
+    private static final String DEBUG_TAG = "KeywordFilter";
+    private static volatile long lastToastTimestamp = 0;
 
     private final StringFilterGroup commentsFilter = new StringFilterGroup(
             Settings.HIDE_KEYWORD_CONTENT_COMMENTS,
@@ -54,26 +58,26 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     }
 
     /**
-     * Извлекает окружающий UTF-8 текст из сырого Protobuf-буфера,
-     * отсекая бинарные байты разметки (< 0x20).
+     * Извлекает читаемую UTF-8 строку из Protobuf-буфера.
+     * Прерывается на любых управляющих байтах и тегах Protobuf (< 32 или 127).
      */
     @Nullable
     private static String getEnclosingTextSpan(byte[] buffer, int matchStart, int matchLength) {
         int start = matchStart;
-        int minStart = Math.max(0, matchStart - 1024);
+        int minStart = Math.max(0, matchStart - 500);
         while (start > minStart) {
-            byte b = buffer[start - 1];
-            if (b >= 0 && b < 0x20 && b != '\t' && b != '\n' && b != '\r') {
+            int ub = buffer[start - 1] & 0xFF;
+            if (ub < 32 || ub == 127) {
                 break;
             }
             start--;
         }
 
         int end = matchStart + matchLength;
-        int maxLen = Math.min(buffer.length, matchStart + matchLength + 1024);
+        int maxLen = Math.min(buffer.length, matchStart + matchLength + 500);
         while (end < maxLen) {
-            byte b = buffer[end];
-            if (b >= 0 && b < 0x20 && b != '\t' && b != '\n' && b != '\r') {
+            int ub = buffer[end] & 0xFF;
+            if (ub < 32 || ub == 127) {
                 break;
             }
             end++;
@@ -88,8 +92,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     }
 
     /**
-     * Проверяет, не относится ли найденная строка к техническим URL, кодекам,
-     * элементам верстки Litho или токенам отслеживания.
+     * Фильтрует системные URL, аппаратные кодеки, разметку Litho и Base64-токены.
      */
     private static boolean isIgnoredTechnicalString(String span) {
         if (span.isEmpty()) return true;
@@ -99,20 +102,21 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         if (s.startsWith("http://") || s.startsWith("https://")
                 || s.contains("googlevideo.com") || s.contains(".ytimg.com")
                 || s.contains("initplayback") || s.contains("youtube.com/")
-                || s.contains("youtubei/v1/")) {
+                || s.contains("youtubei/v1/") || s.contains("ggpht.com")) {
             return true;
         }
 
-        // Аппаратные и программные кодеки
+        // Кодеки
         if (s.startsWith("omx.") || s.startsWith("c2.") || s.contains(".decoder")) {
             return true;
         }
 
-        // Теги и идентификаторы компонентов Litho
+        // Компоненты верстки и внутренние теги Litho
         if (s.startsWith("video_lockup") || s.startsWith("compact_video")
                 || s.startsWith("shorts_") || s.startsWith("modern_type_shelf")
                 || s.startsWith("expandable_metadata") || s.startsWith("thumbnail.")
-                || s.startsWith("avatar.") || s.startsWith("overflow_button.")) {
+                || s.startsWith("avatar.") || s.startsWith("overflow_button.")
+                || s.contains(".eml")) {
             return true;
         }
 
@@ -121,13 +125,13 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return true;
         }
 
-        // URL query параметры или Base64-токены без пробелов (например, key=val, a&b)
-        if ((span.contains("=") || span.contains("&") || span.contains("?")) && !span.contains(" ")) {
+        // Изображения
+        if (s.endsWith(".jpg") || s.endsWith(".png") || s.endsWith(".webp")) {
             return true;
         }
 
-        // Расширения файлов изображений
-        if (s.endsWith(".jpg") || s.endsWith(".png") || s.endsWith(".webp")) {
+        // URL-параметры или токены без пробелов (key=val, a&b, id+hash)
+        if ((span.contains("=") || span.contains("&") || span.contains("%") || span.contains("+")) && !span.contains(" ")) {
             return true;
         }
 
@@ -135,33 +139,47 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     }
 
     /**
-     * Честная Unicode-проверка целого слова (работает одинаково для кириллицы и латиницы).
+     * Проверяет, является ли символ естественным разделителем слов в человеческом тексте.
+     * Символы URL и кода (_, /, &, =, +, %, цифры) разделителями НЕ считаются.
      */
-    private static boolean isValidWholeWord(String span, String keyword) {
+    private static boolean isNaturalWordDelimiter(int cp) {
+        if (Character.isWhitespace(cp)) {
+            return true;
+        }
+        return switch (cp) {
+            case '.', ',', '!', '?', ':', ';', '"', '\'', '(', ')', '[', ']', '{', '}',
+                 '«', '»', '—', '–', '-', '…' -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Проверяет совпадение как отдельного самостоятельного слова в тексте.
+     */
+    private static boolean isCleanWordMatch(String span, String keyword) {
         String spanLower = span.toLowerCase(Locale.ROOT);
         String keywordLower = keyword.toLowerCase(Locale.ROOT);
         int kwLen = keywordLower.length();
-        int idx = 0;
 
+        int idx = 0;
         while ((idx = spanLower.indexOf(keywordLower, idx)) != -1) {
             int cpBefore = idx > 0 ? span.codePointBefore(idx) : -1;
             int nextIdx = idx + kwLen;
             int cpAfter = nextIdx < span.length() ? span.codePointAt(nextIdx) : -1;
 
-            boolean boundaryBefore = (cpBefore == -1 || (!Character.isLetterOrDigit(cpBefore) && cpBefore != '_'));
-            boolean boundaryAfter = (cpAfter == -1 || (!Character.isLetterOrDigit(cpAfter) && cpAfter != '_'));
+            boolean beforeOk = (cpBefore == -1 || isNaturalWordDelimiter(cpBefore));
+            boolean afterOk = (cpAfter == -1 || isNaturalWordDelimiter(cpAfter));
 
-            if (boundaryBefore && boundaryAfter) {
+            if (beforeOk && afterOk) {
                 return true;
             }
             idx++;
         }
-
         return false;
     }
 
     /**
-     * Валидация совпадения в буфере: отсеивает ложные срабатывания в бинарных данных.
+     * Комплексная валидация совпадения в буфере.
      */
     private static boolean isMatchValid(byte[] buffer, int startIndex, int matchLength, String keyword, boolean isWholeWord) {
         String span = getEnclosingTextSpan(buffer, startIndex, matchLength);
@@ -173,7 +191,34 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return span.toLowerCase(Locale.ROOT).contains(keyword.toLowerCase(Locale.ROOT));
         }
 
-        return isValidWholeWord(span, keyword);
+        return isCleanWordMatch(span, keyword);
+    }
+
+    private static int indexOfBytes(byte[] data, byte[] pattern, int fromIndex) {
+        final int dl = data.length;
+        final int pl = pattern.length;
+        if (pl == 0) return -1;
+        for (int i = Math.max(0, fromIndex), end = dl - pl; i <= end; i++) {
+            if (data[i] != pattern[0]) continue;
+            int j = 1;
+            while (j < pl && data[i + j] == pattern[j]) j++;
+            if (j == pl) return i;
+        }
+        return -1;
+    }
+
+    private static String extractSnippetForDebug(byte[] buffer, @Nullable String keyword) {
+        if (keyword == null) return "unknown";
+        byte[] kwBytes = keyword.getBytes(StandardCharsets.UTF_8);
+        int idx = indexOfBytes(buffer, kwBytes, 0);
+        if (idx == -1) return keyword;
+        String span = getEnclosingTextSpan(buffer, idx, kwBytes.length);
+        if (span == null || span.isEmpty()) return keyword;
+        span = span.trim().replaceAll("\\s+", " ");
+        if (span.length() > 60) {
+            return span.substring(0, 60) + "...";
+        }
+        return span;
     }
 
     private synchronized void parseKeywords() {
@@ -244,7 +289,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
                 TrieSearch.TriePatternMatchedCallback<byte[]> callback =
                         (textSearched, startIndex, matchLength, callbackParameter) -> {
-                            // Заменяем сломанную проверку на безопасную валидацию в реальном тексте
                             if (!isMatchValid(textSearched, startIndex, matchLength, keyword, isWholeWord)) {
                                 return false;
                             }
@@ -314,8 +358,21 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         if (search == null) return null;
         MutableReference<String> matchRef = new MutableReference<>();
         if (!search.matches(buffer, matchRef)) return null;
+
+        String keyword = matchRef.value;
         recordHide(matchedGroup, buffer);
-        return matchRef.value;
+
+        // DEBUG: логирование в Logcat и показ тоста на экране
+        String snippet = extractSnippetForDebug(buffer, keyword);
+        Log.e(DEBUG_TAG, "FILTERED! keyword='" + keyword + "', in text: '" + snippet + "'");
+
+        long now = System.currentTimeMillis();
+        if (now - lastToastTimestamp > 1500) {
+            lastToastTimestamp = now;
+            Utils.showToastLong("Скрыто [" + keyword + "]: " + snippet);
+        }
+
+        return keyword;
     }
 
     @Override
