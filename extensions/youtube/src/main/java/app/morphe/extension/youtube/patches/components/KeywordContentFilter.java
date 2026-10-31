@@ -23,7 +23,6 @@
 package app.morphe.extension.youtube.patches.components;
 
 import static app.morphe.extension.shared.StringRef.str;
-import static app.morphe.extension.shared.patches.TextComponentPatch.newSpanUsingStylingOfAnotherSpan;
 
 import android.app.Activity;
 import android.content.Context;
@@ -36,12 +35,14 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.net.Uri;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.BackgroundColorSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.StyleSpan;
+import android.util.Base64;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -68,8 +69,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -78,9 +82,9 @@ import java.util.regex.PatternSyntaxException;
 import app.morphe.extension.shared.Logger;
 import app.morphe.extension.shared.Utils;
 import app.morphe.extension.shared.innertube.utils.AuthUtils;
-import app.morphe.extension.shared.patches.LithoRelayoutPatch;
 import app.morphe.extension.shared.patches.components.BufferHideStatsTracker;
 import app.morphe.extension.shared.patches.components.BufferPhraseFilter;
+import app.morphe.extension.shared.patches.components.ByteArrayFilterGroup;
 import app.morphe.extension.shared.patches.components.ContextInterface;
 import app.morphe.extension.shared.patches.components.StringFilterGroup;
 import app.morphe.extension.shared.requests.Requester;
@@ -110,7 +114,11 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     /**
      * Protobuf field numbers in YouTube's Litho elements.
      */
+    private static final int SEGMENT_FIELD_NUMBER = 1;
+    private static final int SEGMENT_TEXT_FIELD_NUMBER = 1;
     private static final int TEXT_CONTENT_FIELD_NUMBER = 1;
+    private static final int RANGE_START_FIELD_NUMBER = 1;
+    private static final int RANGE_LENGTH_FIELD_NUMBER = 2;
     private static final int STYLE_RUNS_FIELD_NUMBER = 3;
     private static final int COMMAND_RUNS_FIELD_NUMBER = 4;
     private static final int ATTACHMENT_RUNS_FIELD_NUMBER = 5;
@@ -127,6 +135,16 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     private static final int LOGGING_DIRECTIVES_FIELD_NUMBER = 999;
 
     private static final String COMMENT_THREAD_PATH = "comment_thread.eml";
+    private static final String DESCRIPTION_IDENTIFIER = "description_rich_text_list.eml";
+    private static final String SHORTS_DESCRIPTION_IDENTIFIER = "cell_description_body.eml";
+    private static final String DESCRIPTION_BODY_STATE_ID = "structured-description-body-state-id";
+    private static final String DESCRIPTION_REDIRECT_PATH = "/redirect";
+
+    private static final ByteArrayFilterGroup descriptionElementBuffer = new ByteArrayFilterGroup(
+            null,
+            DESCRIPTION_IDENTIFIER,
+            SHORTS_DESCRIPTION_IDENTIFIER
+    );
 
     /** Litho component identifier pattern, such as 'video_lockup_with_attachment.eml-fe|c0c4a49b6544b5fb'. */
     private static final Pattern IDENTIFIER_PATTERN =
@@ -139,6 +157,10 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     /** Base64 entity key pattern. */
     private static final Pattern ENTITY_KEY_PATTERN =
             Pattern.compile("^[A-Za-z0-9_-]{14,}(?:%3D|=)*$");
+
+    /** Video ID encoded as field 1 or 2 inside a Base64 entity key. */
+    private static final Pattern ENCODED_VIDEO_ID_PATTERN =
+            Pattern.compile("[\\x0A\\x12]\\x0B([A-Za-z0-9_-]{11})");
 
     /** Short duration badge text such as 4:05 or 1:02:33. */
     private static final Pattern DURATION_BADGE_PATTERN =
@@ -1419,7 +1441,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         return trimmed.equals("LIVE") || trimmed.equals("4K") || trimmed.equals("HD") || trimmed.equals("CC");
     }
 
-    // region Subtitle / Transcript Keyword Scanner (Native Description & Subtitle Info)
+    // region Subtitle / Transcript Keyword Scanner (Native Description Element Injection)
 
     private static final int SUBTITLE_CONNECT_TIMEOUT_MS = 8_000;
     private static final int SUBTITLE_READ_TIMEOUT_MS = 10_000;
@@ -1447,27 +1469,16 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     }
 
     private static final class SubtitleScanState {
+        final CountDownLatch latch = new CountDownLatch(1);
         volatile boolean pending = true;
         volatile List<SubtitleMatchItem> items = Collections.emptyList();
-        @Nullable
-        volatile String firstDescriptionSegment;
     }
 
     private static final Map<String, SubtitleScanState> subtitleScanCache =
             Collections.synchronizedMap(Utils.createSizeRestrictedMap(80, true));
 
-    private record SubtitleFormattedSpan(String videoId, int rulesVersion) {}
-
-    private record PendingSubtitleRelayoutSpan(String cacheKey) implements LithoRelayoutPatch.RelayoutSpan {
-        @Override
-        public boolean isOutdated() {
-            SubtitleScanState state = subtitleScanCache.get(cacheKey);
-            return state != null && !state.pending && !state.items.isEmpty();
-        }
-    }
-
     /**
-     * Injection point called by {@code hookVideoId} when a video is opened.
+     * Called when a new video is loaded so subtitle scanning starts immediately in the background.
      */
     public static void onVideoIdLoaded(@Nullable String videoId) {
         try {
@@ -1495,76 +1506,384 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             }
             SubtitleScanState state = new SubtitleScanState();
             subtitleScanCache.put(cacheKey, state);
-            Utils.runOnBackgroundThread(() -> runSubtitleScan(videoId, cacheKey, state, rules));
+            Utils.runOnBackgroundThread(() -> runSubtitleScan(videoId, state, rules));
             return state;
         }
     }
 
-    private static void runSubtitleScan(String videoId, String cacheKey,
-                                        SubtitleScanState state, List<KeywordRule> rules) {
+    private static void runSubtitleScan(String videoId, SubtitleScanState state, List<KeywordRule> rules) {
         try {
             List<SubtitleLine> lines = fetchSubtitleLines(videoId);
-            if (lines.isEmpty()) {
-                state.pending = false;
-                return;
-            }
+            if (!lines.isEmpty()) {
+                Map<String, SubtitleMatchItem> byWordKey = new LinkedHashMap<>();
+                Set<String> seenSnippets = new HashSet<>();
 
-            Map<String, SubtitleMatchItem> byWordKey = new LinkedHashMap<>();
-            Set<String> seenSnippets = new HashSet<>();
+                for (int i = 0, size = lines.size(); i < size; i++) {
+                    SubtitleLine line = lines.get(i);
+                    String text = line.text;
+                    if (text.length() < 2) continue;
 
-            for (int i = 0, size = lines.size(); i < size; i++) {
-                SubtitleLine line = lines.get(i);
-                String text = line.text;
-                if (text.length() < 2) continue;
+                    String matchedWord = findFirstRuleWordInSubtitle(text, rules);
+                    if (matchedWord == null) continue;
 
-                String matchedWord = findFirstRuleWordInSubtitle(text, rules);
-                if (matchedWord == null) continue;
+                    String wordKey = matchedWord.toLowerCase(Locale.ROOT).trim();
+                    if (wordKey.isEmpty()) continue;
 
-                String wordKey = matchedWord.toLowerCase(Locale.ROOT).trim();
-                if (wordKey.isEmpty()) continue;
-
-                SubtitleMatchItem existing = byWordKey.get(wordKey);
-                if (existing != null) {
-                    if (line.startMs - existing.lastTimestampMs >= MIN_TIMESTAMP_GAP_MS
-                            && existing.timestamps.size() < MAX_TIMESTAMPS_PER_WORD) {
-                        String ts = formatTimestamp(line.startMs);
-                        if (!existing.timestamps.contains(ts)) {
-                            existing.timestamps.add(ts);
-                            existing.lastTimestampMs = line.startMs;
+                    SubtitleMatchItem existing = byWordKey.get(wordKey);
+                    if (existing != null) {
+                        if (line.startMs - existing.lastTimestampMs >= MIN_TIMESTAMP_GAP_MS
+                                && existing.timestamps.size() < MAX_TIMESTAMPS_PER_WORD) {
+                            String ts = formatTimestamp(line.startMs);
+                            if (!existing.timestamps.contains(ts)) {
+                                existing.timestamps.add(ts);
+                                existing.lastTimestampMs = line.startMs;
+                            }
                         }
+                        continue;
                     }
-                    continue;
+
+                    if (byWordKey.size() >= MAX_SUBTITLE_MATCH_ITEMS) {
+                        continue;
+                    }
+
+                    String snippet = buildCleanSubtitleSnippet(text, matchedWord, 64);
+                    String snippetKey = snippet.toLowerCase(Locale.ROOT);
+                    if (!seenSnippets.add(snippetKey)) {
+                        continue;
+                    }
+
+                    byWordKey.put(wordKey, new SubtitleMatchItem(
+                            matchedWord,
+                            snippet,
+                            formatTimestamp(line.startMs),
+                            line.startMs
+                    ));
                 }
 
-                if (byWordKey.size() >= MAX_SUBTITLE_MATCH_ITEMS) {
-                    continue;
+                if (!byWordKey.isEmpty()) {
+                    state.items = Collections.unmodifiableList(new ArrayList<>(byWordKey.values()));
                 }
-
-                String snippet = buildCleanSubtitleSnippet(text, matchedWord, 64);
-                String snippetKey = snippet.toLowerCase(Locale.ROOT);
-                if (!seenSnippets.add(snippetKey)) {
-                    continue;
-                }
-
-                byWordKey.put(wordKey, new SubtitleMatchItem(
-                        matchedWord,
-                        snippet,
-                        formatTimestamp(line.startMs),
-                        line.startMs
-                ));
-            }
-
-            if (!byWordKey.isEmpty()) {
-                state.items = Collections.unmodifiableList(new ArrayList<>(byWordKey.values()));
-                state.pending = false;
-                LithoRelayoutPatch.relayoutOutdatedTexts();
-            } else {
-                state.pending = false;
             }
         } catch (Exception ex) {
             Logger.printDebug(() -> "Subtitle scan failed for video: " + videoId, ex);
+        } finally {
             state.pending = false;
+            state.latch.countDown();
         }
+    }
+
+    /**
+     * Injection point called by {@code hookElement("$KEYWORD_FILTER->onDescriptionElementLoaded")}.
+     * Modifies {@code description_rich_text_list.eml} and {@code cell_description_body.eml} directly
+     * at the protobuf level (using the same segment & run-shifting architecture as OriginalDescription)
+     * so descriptions with links, social chips (Twitch/VK/Telegram), and embedded video link cards
+     * all display subtitle matches cleanly without ever touching embedded video card titles.
+     */
+    public static byte[] onDescriptionElementLoaded(byte[] bytes) {
+        try {
+            if (!Settings.HIDE_KEYWORD_CONTENT_CHECK_SUBTITLES.get()
+                    || bytes == null
+                    || !descriptionElementBuffer.check(bytes).isFiltered()) {
+                return bytes;
+            }
+
+            KeywordContentFilter filter = instance;
+            if (filter == null) {
+                return bytes;
+            }
+            filter.reparseIfNeeded();
+            List<KeywordRule> rules = filter.parsedRules;
+            if (rules.isEmpty()) {
+                return bytes;
+            }
+
+            List<ProtoNode> root = ProtoNode.parse(bytes);
+            if (root == null) {
+                return bytes;
+            }
+
+            List<ProtoNode> textNodes = ProtoNode.textNodes(root);
+            String identifier = null;
+            for (int i = 0, size = textNodes.size(); i < size; i++) {
+                String text = textNodes.get(i).getText();
+                if (IDENTIFIER_PATTERN.matcher(text).matches()) {
+                    identifier = text;
+                    break;
+                }
+            }
+            if (identifier == null) {
+                return bytes;
+            }
+
+            boolean isShortsDescription = identifier.startsWith(SHORTS_DESCRIPTION_IDENTIFIER);
+            boolean isVideoDescription = identifier.startsWith(DESCRIPTION_IDENTIFIER);
+            if (!isShortsDescription && !isVideoDescription) {
+                return bytes;
+            }
+
+            String videoId = findDescriptionVideoId(textNodes);
+            if (videoId == null || videoId.isEmpty()) {
+                videoId = VideoInformation.getStartingOrPlayingVideoId();
+                if (videoId.isEmpty()) {
+                    videoId = VideoInformation.getVideoId();
+                }
+            }
+            if (videoId.isEmpty()) {
+                return bytes;
+            }
+
+            SubtitleScanState state = ensureSubtitleScanStarted(videoId, filter.currentRulesVersion, rules);
+            if (state.pending) {
+                try {
+                    state.latch.await(1500, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            List<SubtitleMatchItem> items = state.items;
+            if (items.isEmpty()) {
+                return bytes;
+            }
+
+            String headerTitle = str("morphe_hide_keyword_subtitles_header");
+            StringBuilder block = new StringBuilder();
+            block.append(headerTitle).append('\n');
+            for (int i = 0, size = items.size(); i < size; i++) {
+                SubtitleMatchItem item = items.get(i);
+                block.append(String.join(", ", item.timestamps))
+                        .append(" — «")
+                        .append(item.snippet)
+                        .append("»\n");
+            }
+            block.append('\n');
+            String prefix = block.toString();
+
+            boolean modified = isShortsDescription
+                    ? prependToShortsDescription(root, prefix, headerTitle)
+                    : prependToVideoDescription(root, prefix, headerTitle);
+
+            return modified ? ProtoNode.write(root) : bytes;
+        } catch (Exception ex) {
+            Logger.printException(() -> "onDescriptionElementLoaded failure", ex);
+        }
+        return bytes;
+    }
+
+    @Nullable
+    private static String findDescriptionVideoId(List<ProtoNode> textNodes) {
+        for (int i = 0, size = textNodes.size(); i < size; i++) {
+            String text = textNodes.get(i).getText();
+            if (text.contains(DESCRIPTION_REDIRECT_PATH)) {
+                try {
+                    Uri uri = Uri.parse(text);
+                    if (DESCRIPTION_REDIRECT_PATH.equals(uri.getPath()) && uri.getHost() != null) {
+                        String v = uri.getQueryParameter("v");
+                        if (v != null && v.length() == 11) {
+                            return v;
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        for (int i = 0, size = textNodes.size(); i < size; i++) {
+            String text = textNodes.get(i).getText();
+            if (!ENTITY_KEY_PATTERN.matcher(text).matches()) {
+                continue;
+            }
+            try {
+                byte[] decoded = Base64.decode(text.replace("%3D", ""),
+                        Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+                Matcher matcher = ENCODED_VIDEO_ID_PATTERN.matcher(
+                        new String(decoded, StandardCharsets.ISO_8859_1));
+                if (matcher.find()) {
+                    return matcher.group(1);
+                }
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static boolean prependToVideoDescription(List<ProtoNode> root, String prefix, String headerTitle) {
+        List<ProtoNode> segments = findDescriptionBodySegments(root);
+        if (segments == null) {
+            return false;
+        }
+        for (int i = 0, size = segments.size(); i < size; i++) {
+            ProtoNode segment = segments.get(i);
+            ProtoNode segmentText = ProtoNode.field(segment.children, SEGMENT_TEXT_FIELD_NUMBER);
+            ProtoNode content = segmentText == null || segmentText.children == null
+                    ? null
+                    : ProtoNode.field(segmentText.children, TEXT_CONTENT_FIELD_NUMBER);
+            if (content != null && content.decodeText() != null && !content.decodeText().isEmpty()) {
+                return prependTextAndShiftRuns(segmentText.children, content, prefix, headerTitle);
+            }
+        }
+        return false;
+    }
+
+    @Nullable
+    private static List<ProtoNode> findDescriptionBodySegments(List<ProtoNode> message) {
+        boolean isBody = false;
+        List<ProtoNode> segments = new ArrayList<>();
+        boolean hasText = false;
+        for (int i = 0, size = message.size(); i < size; i++) {
+            ProtoNode field = message.get(i);
+            if (field.isText() && DESCRIPTION_BODY_STATE_ID.equals(field.getText())) {
+                isBody = true;
+            } else if (field.getFieldNumber() == SEGMENT_FIELD_NUMBER && field.children != null) {
+                segments.add(field);
+                ProtoNode segmentText = ProtoNode.field(field.children, SEGMENT_TEXT_FIELD_NUMBER);
+                ProtoNode content = segmentText == null || segmentText.children == null
+                        ? null
+                        : ProtoNode.field(segmentText.children, TEXT_CONTENT_FIELD_NUMBER);
+                if (content != null) {
+                    String decoded = content.decodeText();
+                    hasText |= decoded != null && !decoded.isEmpty();
+                }
+            }
+        }
+        if (isBody && hasText) {
+            return segments;
+        }
+
+        for (int i = 0, size = message.size(); i < size; i++) {
+            ProtoNode field = message.get(i);
+            if (field.children != null) {
+                List<ProtoNode> bodySegments = findDescriptionBodySegments(field.children);
+                if (bodySegments != null) {
+                    return bodySegments;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean prependToShortsDescription(List<ProtoNode> root, String prefix, String headerTitle) {
+        ProtoNode content = findShortsDescriptionContent(root, null);
+        if (content == null) {
+            return false;
+        }
+        ProtoNode parent = content.getParent();
+        if (parent != null && parent.children != null
+                && ProtoNode.field(parent.children, TEXT_CONTENT_FIELD_NUMBER) == content) {
+            return prependTextAndShiftRuns(parent.children, content, prefix, headerTitle);
+        }
+        String originalText = content.decodeUtf8();
+        if (originalText.startsWith(headerTitle)) {
+            return false;
+        }
+        content.setText(prefix + originalText);
+        return true;
+    }
+
+    @Nullable
+    private static ProtoNode findShortsDescriptionContent(List<ProtoNode> message,
+                                                          @Nullable ProtoNode best) {
+        for (int i = 0, size = message.size(); i < size; i++) {
+            ProtoNode field = message.get(i);
+            if (field.children != null) {
+                best = findShortsDescriptionContent(field.children, best);
+                continue;
+            }
+            if (field.getFieldNumber() != TEXT_CONTENT_FIELD_NUMBER) {
+                continue;
+            }
+            String text = field.decodeText();
+            if (text != null && normalizeAndFilterUserText(text, null) != null
+                    && (best == null || text.length() > best.decodeUtf8().length())) {
+                best = field;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Prepends {@code prefix} to {@code content} inside an {@code AttributedString} message
+     * ({@code textFields}) and shifts all link, icon, and partial style runs by {@code prefix.length()},
+     * while extending full-text style runs so the prepended block inherits the native description style.
+     */
+    private static boolean prependTextAndShiftRuns(List<ProtoNode> textFields, ProtoNode content,
+                                                   String prefix, String headerTitle) {
+        String originalText = content.decodeUtf8();
+        if (originalText == null || originalText.isEmpty() || originalText.startsWith(headerTitle)) {
+            return false;
+        }
+        final int originalLength = originalText.length();
+        final int prefixLength = prefix.length();
+
+        for (int i = 0, size = textFields.size(); i < size; i++) {
+            ProtoNode run = textFields.get(i);
+            if (run == content || run.children == null) {
+                continue;
+            }
+            shiftRunRange(run.children, originalLength, prefixLength,
+                    run.getFieldNumber() == STYLE_RUNS_FIELD_NUMBER);
+        }
+
+        content.setText(prefix + originalText);
+        return true;
+    }
+
+    private static void shiftRunRange(List<ProtoNode> runFields, int originalLength,
+                                      int prefixLength, boolean isStyleRun) {
+        List<ProtoNode> rangeMessage = findRangeMessageWithStart(runFields);
+        if (rangeMessage != null) {
+            ProtoNode startNode = ProtoNode.field(rangeMessage, RANGE_START_FIELD_NUMBER);
+            if (startNode != null && startNode.getVarint() != null) {
+                startNode.setVarint(startNode.getVarint() + prefixLength);
+                return;
+            }
+        }
+
+        // Run starts at index 0 (so RANGE_START_FIELD = 1 was omitted on the wire in proto3)
+        ProtoNode lengthNode = ProtoNode.field(runFields, RANGE_LENGTH_FIELD_NUMBER);
+        if (lengthNode != null && lengthNode.getVarint() != null) {
+            long len = lengthNode.getVarint();
+            if (isStyleRun && len >= originalLength) {
+                // Full-text base StyleRun: extend length to cover prefix + originalText
+                lengthNode.setVarint(len + prefixLength);
+            } else if (len > 0 && len <= originalLength) {
+                ProtoNode newStart = createVarintNode(RANGE_START_FIELD_NUMBER, prefixLength);
+                if (newStart != null) {
+                    runFields.add(0, newStart);
+                }
+            }
+        }
+    }
+
+    @Nullable
+    private static List<ProtoNode> findRangeMessageWithStart(List<ProtoNode> run) {
+        Queue<List<ProtoNode>> messages = new ArrayDeque<>();
+        messages.add(run);
+        while (!messages.isEmpty()) {
+            List<ProtoNode> message = messages.remove();
+            ProtoNode start = ProtoNode.field(message, RANGE_START_FIELD_NUMBER);
+            if (start != null && start.getVarint() != null) {
+                return message;
+            }
+            for (int i = 0, size = message.size(); i < size; i++) {
+                List<ProtoNode> children = message.get(i).children;
+                if (children != null) {
+                    messages.add(children);
+                }
+            }
+        }
+        return null;
+    }
+
+    @Nullable
+    private static ProtoNode createVarintNode(int fieldNumber, long value) {
+        byte tag = (byte) (fieldNumber << 3);
+        List<ProtoNode> parsed = ProtoNode.parse(new byte[]{tag, 0});
+        if (parsed == null || parsed.isEmpty()) {
+            return null;
+        }
+        ProtoNode node = parsed.get(0);
+        node.setVarint(value);
+        return node;
     }
 
     @Nullable
@@ -1595,7 +1914,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             start = Math.max(0, end - maxChars);
         }
 
-        // Snap to whole-word boundaries so words are never cut in half
         if (start > 0) {
             int nextSpace = cleaned.indexOf(' ', start);
             if (nextSpace > start && nextSpace < idx) {
@@ -1828,156 +2146,14 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         return lines;
     }
 
-    @Nullable
-    private static CharSequence decorateWithSubtitleMatchesIfNeeded(ContextInterface contextInterface,
-                                                                    CharSequence original,
-                                                                    KeywordContentFilter filter) {
-        if (!Settings.HIDE_KEYWORD_CONTENT_CHECK_SUBTITLES.get()) {
-            return null;
-        }
-        if (original instanceof Spanned spanned) {
-            SubtitleFormattedSpan[] existing = spanned.getSpans(0, spanned.length(), SubtitleFormattedSpan.class);
-            if (existing != null && existing.length > 0) {
-                return original;
-            }
-        }
-        if (contextInterface == null) {
-            return null;
-        }
-        StringBuilder pathBuilder = contextInterface.patch_getPathBuilder();
-        if (pathBuilder == null || pathBuilder.length() == 0) {
-            return null;
-        }
-        String path = pathBuilder.toString();
-        boolean isVideoSubtitleRow = path.contains("|video_subtitle.");
-        boolean isDescriptionBody = path.startsWith("description_rich_text_list.e")
-                || path.startsWith("cell_description_body.e");
-        if (!isVideoSubtitleRow && !isDescriptionBody) {
-            return null;
-        }
-
-        String videoId = VideoInformation.getStartingOrPlayingVideoId();
-        if (videoId.isEmpty()) {
-            videoId = VideoInformation.getVideoId();
-        }
-        if (videoId.isEmpty()) {
-            return null;
-        }
-
-        List<KeywordRule> rules = filter.parsedRules;
-        if (rules.isEmpty()) {
-            return null;
-        }
-
-        int rulesVer = filter.currentRulesVersion;
-        String cacheKey = videoId + "|" + rulesVer;
-        SubtitleScanState state = ensureSubtitleScanStarted(videoId, rulesVer, rules);
-
-        String cleanedOriginal = stripFormatCharacters(original);
-        if (cleanedOriginal.isEmpty()) {
-            return null;
-        }
-
-        if (isDescriptionBody) {
-            if (state.firstDescriptionSegment == null) {
-                state.firstDescriptionSegment = cleanedOriginal;
-            } else if (!state.firstDescriptionSegment.equals(cleanedOriginal)) {
-                return null; // Only prepend once to the first text segment of the description
-            }
-        }
-
-        if (state.pending) {
-            SpannableString pendingSpan = new SpannableString(original);
-            pendingSpan.setSpan(new PendingSubtitleRelayoutSpan(cacheKey),
-                    0, pendingSpan.length(), Spanned.SPAN_INCLUSIVE_INCLUSIVE);
-            return pendingSpan;
-        }
-
-        List<SubtitleMatchItem> items = state.items;
-        if (items.isEmpty()) {
-            return null;
-        }
-
-        Spanned baseStyle = original instanceof Spanned s ? s : new SpannableString(original);
-
-        if (isVideoSubtitleRow) {
-            StringBuilder summary = new StringBuilder();
-            int count = Math.min(3, items.size());
-            for (int i = 0; i < count; i++) {
-                if (i > 0) summary.append(", ");
-                SubtitleMatchItem item = items.get(i);
-                summary.append(item.matchedWord).append(" (").append(item.timestamps.get(0)).append(")");
-            }
-            if (items.size() > count) {
-                summary.append(" +").append(items.size() - count);
-            }
-            String inlineNote = " • " + str("morphe_hide_keyword_subtitles_inline", summary.toString());
-            if (original.toString().contains(inlineNote)) {
-                return original;
-            }
-
-            SpannableString styledNote = newSpanUsingStylingOfAnotherSpan(baseStyle, inlineNote, true);
-            SpannableStringBuilder combined = new SpannableStringBuilder(original);
-            combined.append(styledNote);
-            combined.setSpan(new SubtitleFormattedSpan(videoId, rulesVer),
-                    0, combined.length(), Spanned.SPAN_INCLUSIVE_INCLUSIVE);
-            return new SpannableString(combined);
-        }
-
-        // Full description panel body: prepend a native-styled, non-repetitive block at the top
-        String headerTitle = str("morphe_hide_keyword_subtitles_header");
-        if (original.toString().startsWith(headerTitle)) {
-            return original;
-        }
-
-        StringBuilder blockText = new StringBuilder();
-        List<int[]> boldRanges = new ArrayList<>();
-
-        blockText.append(headerTitle).append("\n");
-        boldRanges.add(new int[]{0, headerTitle.length()});
-
-        for (int i = 0, size = items.size(); i < size; i++) {
-            SubtitleMatchItem item = items.get(i);
-            String tsJoined = String.join(", ", item.timestamps);
-            int tsStart = blockText.length();
-            blockText.append(tsJoined);
-            boldRanges.add(new int[]{tsStart, blockText.length()});
-
-            blockText.append(" — ");
-            int snippetStart = blockText.length();
-            blockText.append(item.snippet);
-
-            int wordIdx = item.snippet.toLowerCase(Locale.ROOT)
-                    .indexOf(item.matchedWord.toLowerCase(Locale.ROOT));
-            if (wordIdx >= 0) {
-                boldRanges.add(new int[]{snippetStart + wordIdx,
-                        snippetStart + wordIdx + item.matchedWord.length()});
-            }
-            blockText.append("\n");
-        }
-        blockText.append("\n");
-
-        SpannableString styledHeaderBlock = newSpanUsingStylingOfAnotherSpan(baseStyle, blockText.toString(), true);
-        SpannableStringBuilder builder = new SpannableStringBuilder(styledHeaderBlock);
-        for (int i = 0, size = boldRanges.size(); i < size; i++) {
-            int[] r = boldRanges.get(i);
-            if (r[1] > r[0] && r[1] <= builder.length()) {
-                builder.setSpan(new StyleSpan(Typeface.BOLD), r[0], r[1], Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            }
-        }
-        builder.append(original);
-        builder.setSpan(new SubtitleFormattedSpan(videoId, rulesVer),
-                0, builder.length(), Spanned.SPAN_INCLUSIVE_INCLUSIVE);
-        return new SpannableString(builder);
-    }
-
     // endregion
 
     // region Debug Mode hooks (Inline word highlighting & ComponentHost dimming)
 
     /**
      * Injection point called by {@code hookLithoSpannableString(KEYWORD_FILTER)}.
-     * Handles native subtitle match display in descriptions and inline word highlighting in Debug Mode.
+     * Triggers background subtitle scanning when the watch page metadata row loads,
+     * and highlights matched trigger words inline in Debug Mode.
      */
     public static CharSequence onLithoTextLoaded(ContextInterface contextInterface, CharSequence original) {
         try {
@@ -1991,13 +2167,19 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             }
             filter.reparseIfNeeded();
 
-            // 1. Check native subtitle match display for video description / subtitle row
-            CharSequence subtitleDecorated = decorateWithSubtitleMatchesIfNeeded(contextInterface, original, filter);
-            if (subtitleDecorated != null) {
-                return subtitleDecorated;
+            // When the watch page metadata row loads, ensure the background subtitle scan has started
+            if (Settings.HIDE_KEYWORD_CONTENT_CHECK_SUBTITLES.get() && contextInterface != null) {
+                StringBuilder pb = contextInterface.patch_getPathBuilder();
+                if (pb != null && pb.indexOf("|video_subtitle.") >= 0) {
+                    String vid = VideoInformation.getStartingOrPlayingVideoId();
+                    if (vid.isEmpty()) vid = VideoInformation.getVideoId();
+                    if (!vid.isEmpty() && !filter.parsedRules.isEmpty()) {
+                        ensureSubtitleScanStarted(vid, filter.currentRulesVersion, filter.parsedRules);
+                    }
+                }
             }
 
-            // 2. Debug Mode inline word highlighting
+            // Debug Mode inline word highlighting
             if (!Settings.HIDE_KEYWORD_CONTENT_DEBUG.get()) {
                 return original;
             }
@@ -2272,9 +2454,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
     /**
      * Drawable attached to {@link ComponentHost#getOverlay()} in Debug Mode.
-     * Dims the matched card with a clean semi-transparent scrim and subtle border
-     * (without drawing micro-text or repeating the title on top of the thumbnail,
-     * since the matched word is highlighted directly inside the native text).
+     * Dims the matched card with a clean semi-transparent scrim and subtle border.
      */
     private static final class DebugCardOverlay extends Drawable {
         private static final int BORDER_COLOR = 0x99EF5350;

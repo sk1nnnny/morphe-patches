@@ -72,8 +72,6 @@ import app.morphe.patches.youtube.shared.ModernRelateVideoOverlayFingerprint
 import app.morphe.patches.youtube.shared.RelateVideoOverlayLayoutParamFingerprint
 import app.morphe.patches.youtube.video.information.videoInformationPatch
 import app.morphe.patches.youtube.video.speed.custom.TapAndHoldSpeedFingerprint
-import app.morphe.patches.youtube.video.videoid.hookVideoId
-import app.morphe.patches.youtube.video.videoid.videoIdPatch
 import app.morphe.util.addInstructionsAtControlFlowLabel
 import app.morphe.util.findInstructionIndicesReversedOrThrow
 import app.morphe.util.fiveRegisters
@@ -129,8 +127,7 @@ val hideLayoutComponentsPatch = bytecodePatch(
         textComponentPatch,
         lithoSpannableStringPatch,
         lithoRelayoutPatch,
-        videoInformationPatch,
-        videoIdPatch
+        videoInformationPatch
     )
 
     compatibleWith(COMPATIBILITY_YOUTUBE)
@@ -610,6 +607,7 @@ val hideLayoutComponentsPatch = bytecodePatch(
         // region hide comments carousel
 
         hookElement("$COMMENTS_FILTER->onCommentsLoaded")
+        hookElement("$KEYWORD_FILTER->onDescriptionElementLoaded")
 
         // endregion
 
