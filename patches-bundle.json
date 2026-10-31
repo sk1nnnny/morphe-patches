@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-10-31T08:30:04",
-  "description": "## [1.0.1](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.0...v1.0.1) (2026-10-31)\n\n### 🐛 Bug Fixes\n\n* 111 ([197554d](https://github.com/sk1nnnny/morphe-patches/commit/197554d672e0f6c858fa894b6d41789467ff0537))\n* 4748 ([0f078ff](https://github.com/sk1nnnny/morphe-patches/commit/0f078ffa5a79de86209cafde860b1c008a1a0583))",
-  "download_url": "https://github.com/sk1nnnny/morphe-patches/releases/download/v1.0.1/patches-1.0.1.mpp",
+  "created_at": "2026-10-31T08:35:16",
+  "description": "## [1.0.2](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.1...v1.0.2) (2026-10-31)\n\n### 🐛 Bug Fixes\n\n* sosi ([a2da706](https://github.com/sk1nnnny/morphe-patches/commit/a2da706f681281f42c9c9f3b20ebee639813c54c))",
+  "download_url": "https://github.com/sk1nnnny/morphe-patches/releases/download/v1.0.2/patches-1.0.2.mpp",
   "signature_download_url": "",
-  "version": "1.0.1"
+  "version": "1.0.2"
 }

@@ -1,3 +1,9 @@
+## [1.0.2](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.1...v1.0.2) (2026-10-31)
+
+### 🐛 Bug Fixes
+
+* sosi ([a2da706](https://github.com/sk1nnnny/morphe-patches/commit/a2da706f681281f42c9c9f3b20ebee639813c54c))
+
 ## [1.0.1](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.0...v1.0.1) (2026-10-31)
 
 ### 🐛 Bug Fixes
