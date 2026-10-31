@@ -1063,12 +1063,12 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         if (path.contains("comment_thread.eml") || path.contains("|comment.e")) {
             return Settings.HIDE_KEYWORD_CONTENT_COMMENTS.get();
         }
-        for (String prefix : startsWithFilter.filters) {
-            if (path.startsWith(prefix)) {
+        for (CharSequence prefix : startsWithFilter.filters) {
+            if (path.startsWith(prefix.toString())) {
                 return isActiveForFeedContext(contextInterface);
             }
         }
-        for (String sub : containsFilter.filters) {
+        for (CharSequence sub : containsFilter.filters) {
             if (path.contains(sub)) {
                 return isActiveForFeedContext(contextInterface);
             }
