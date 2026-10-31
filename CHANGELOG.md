@@ -1,3 +1,9 @@
+## [1.0.4](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.3...v1.0.4) (2026-10-31)
+
+### 🐛 Bug Fixes
+
+* **youtube:** fix comments filter and add native subtitle keyword check ([d12ad7c](https://github.com/sk1nnnny/morphe-patches/commit/d12ad7cb3e7e20370839b1cc12784278cc822048))
+
 ## [1.0.3](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.2...v1.0.3) (2026-10-31)
 
 ### 🐛 Bug Fixes

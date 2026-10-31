@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-10-31T09:32:30",
-  "description": "## [1.0.3](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.2...v1.0.3) (2026-10-31)\n\n### 🐛 Bug Fixes\n\n* **youtube:** update keyword filter and debug mode ([aaaac0e](https://github.com/sk1nnnny/morphe-patches/commit/aaaac0eb1e0f52de0e1b1c56cf31f547c1d45854))",
-  "download_url": "https://github.com/sk1nnnny/morphe-patches/releases/download/v1.0.3/patches-1.0.3.mpp",
+  "created_at": "2026-10-31T17:31:59",
+  "description": "## [1.0.4](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.3...v1.0.4) (2026-10-31)\n\n### 🐛 Bug Fixes\n\n* **youtube:** fix comments filter and add native subtitle keyword check ([d12ad7c](https://github.com/sk1nnnny/morphe-patches/commit/d12ad7cb3e7e20370839b1cc12784278cc822048))",
+  "download_url": "https://github.com/sk1nnnny/morphe-patches/releases/download/v1.0.4/patches-1.0.4.mpp",
   "signature_download_url": "",
-  "version": "1.0.3"
+  "version": "1.0.4"
 }
