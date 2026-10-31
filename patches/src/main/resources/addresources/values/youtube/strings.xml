@@ -316,28 +316,42 @@ Changes include:
     <string name="morphe_hide_keyword_content_home_title">Hide Home videos by keywords</string>
     <string name="morphe_hide_keyword_content_search_title">Hide search results by keywords</string>
     <string name="morphe_hide_keyword_content_subscriptions_title">Hide Subscriptions videos by keywords</string>
+    <string name="morphe_hide_keyword_content_use_and_operator_title">Use \'AND\' (\'&amp;\') operator</string>
+    <string name="morphe_hide_keyword_content_use_and_operator_summary">Combine multiple keywords on a single line with \'&amp;\' so a video is matched only when all parts are present</string>
+    <string name="morphe_hide_keyword_content_use_regex_title">Use regular expressions (Regex)</string>
+    <string name="morphe_hide_keyword_content_use_regex_summary">Support full regular expressions using /pattern/, regex:pattern, or regex operators</string>
+    <string name="morphe_hide_keyword_content_case_sensitive_title">Case-sensitive matching</string>
+    <string name="morphe_hide_keyword_content_case_sensitive_summary">When disabled (default), keywords match regardless of uppercase or lowercase letters</string>
+    <string name="morphe_hide_keyword_content_debug_title">Debug mode (dim instead of hiding)</string>
+    <string name="morphe_hide_keyword_content_debug_summary">Dims matched videos and comments instead of hiding them and displays the exact rule that triggered the match</string>
+    <string name="morphe_hide_keyword_debug_badge">🔍 Rule: %s</string>
     <string name="morphe_hide_keyword_content_phrases_title">Keywords to hide</string>
     <!-- For localization, it is preferred, but not required, if 'LeBlanc' is replaced with a localized name or a familiar word that has upper case letters in the middle of the word.
          This is because keywords can be in any language, and showing an example in the localized script helps convey this. -->
-    <string name="morphe_hide_keyword_content_phrases_summary">"Enter keywords and phrases to hide, separated by new lines
+    <string name="morphe_hide_keyword_content_phrases_summary">"Enter keywords, phrases, or regular expressions to hide, separated by new lines
 
-Keywords can be any text shown in video titles or channel names
+Keywords match visible text in video titles, channel names (@handles), and comments
 
-Words with uppercase letters in the middle must match exactly (e.g., iPhone, TikTok, LeBlanc)"</string>
-    <string name="morphe_hide_keyword_content_about_summary">"Home / Subscriptions / Search / Comments are filtered to hide content that matches keyword phrases
+Examples:
+• \"ai\" — whole word match (case-insensitive)
+• \"review\" &amp; \"ai\" — matches only when both are present
+• /\\b(ai|gpt|claude)\\b/ — full regular expression"</string>
+    <string name="morphe_hide_keyword_content_about_summary">"Home / Subscriptions / Search / Comments are filtered using visible text from titles, channel names, and comments
 
 Limitations:
-• Shorts cannot be hidden by channel name
-• Some UI components may not be hidden
-• Searching for a keyword may show no results"</string>
-    <string name="morphe_hide_keyword_content_about_whole_words_title">Match whole words</string>
+• Shorts without a channel label cannot be hidden by channel name
+• Some auxiliary UI shelves may not be hidden"</string>
+    <string name="morphe_hide_keyword_content_about_whole_words_title">Match whole words &amp; \'AND\' (\'&amp;\')</string>
     <!-- Translations must use a localized example. For languages that do not use spaces between words (Chinese, Japanese, etc.) the English AI example should be used since no localized examples exist. Or if using machine translations, or if nobody wants to think of a localized example, then the English 'ai' example should be left as-is. -->
-    <string name="morphe_hide_keyword_content_about_whole_words_summary">Surrounding a keyword/phrase with double-quotes will prevent partial matches of video titles and channel names&lt;br>&lt;br>For example,&lt;br>&lt;b>\"ai\"&lt;/b> will hide the video: &lt;b>How does AI work?&lt;/b>&lt;br>but will not hide: &lt;b>What does fair use mean?&lt;/b></string>
+    <string name="morphe_hide_keyword_content_about_whole_words_summary">Surrounding a keyword/phrase with double-quotes prevents partial matches inside other words.&lt;br>&lt;br>For example, &lt;b>\"ai\"&lt;/b> hides &lt;b>How does AI work?&lt;/b> but will not hide &lt;b>What does fair use mean?&lt;/b>&lt;br>&lt;br>Use &lt;b>&amp;amp;&lt;/b> on a single line (e.g., &lt;b>\"ai\" &amp;amp; \"news\"&lt;/b>) to require both keywords to match.</string>
+    <string name="morphe_hide_keyword_content_about_regex_title">Regular expressions &amp; Debug mode</string>
+    <string name="morphe_hide_keyword_content_about_regex_summary">Write regex rules wrapped in slashes &lt;b>/pattern/&lt;/b> (add &lt;b>/c&lt;/b> for case-sensitive, e.g. &lt;b>/\\bAI\\b/c&lt;/b>), prefixed with &lt;b>regex:&lt;/b>, or directly using regex syntax when Regex is enabled.&lt;br>&lt;br>Enable &lt;b>Debug mode&lt;/b> to dim matched cards and see which rule triggered on each video.</string>
     <!-- Translations of this should not be longer than the original English text, otherwise the text can be clipped and not entirely shown. -->
     <string name="morphe_hide_keyword_toast_invalid_common">Cannot use keyword: %s</string>
     <string name="morphe_hide_keyword_toast_invalid_common_whole_word_required">Add quotes to use keyword: %s</string>
     <string name="morphe_hide_keyword_toast_invalid_conflicting">Keyword has conflicting declarations: %s</string>
     <string name="morphe_hide_keyword_toast_invalid_length">Keyword is too short and requires quotes: %s</string>
+    <string name="morphe_hide_keyword_toast_invalid_regex">Invalid regex pattern: %s</string>
     <string name="morphe_hide_keyword_toast_invalid_broad">Keyword will hide all videos: %s</string>
     <string name="morphe_hide_keyword_content_stats_hidden_breakdown">"• Home: %s
 • Subscriptions: %s
