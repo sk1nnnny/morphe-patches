@@ -29,6 +29,7 @@ import app.morphe.patches.shared.misc.fix.proto.fixProtoLibraryPatch
 import app.morphe.patches.shared.misc.litho.context.EXTENSION_CONTEXT_INTERFACE
 import app.morphe.patches.shared.misc.litho.filter.addLithoFilter
 import app.morphe.patches.shared.misc.litho.node.hookTreeNodeResult
+import app.morphe.patches.shared.misc.litho.relayout.lithoRelayoutPatch
 import app.morphe.patches.shared.misc.proto.hookElement
 import app.morphe.patches.shared.misc.settings.preference.InputType
 import app.morphe.patches.shared.misc.settings.preference.ListPreference
@@ -69,7 +70,10 @@ import app.morphe.patches.youtube.misc.settings.settingsPatch
 import app.morphe.patches.youtube.shared.Constants.COMPATIBILITY_YOUTUBE
 import app.morphe.patches.youtube.shared.ModernRelateVideoOverlayFingerprint
 import app.morphe.patches.youtube.shared.RelateVideoOverlayLayoutParamFingerprint
+import app.morphe.patches.youtube.video.information.videoInformationPatch
 import app.morphe.patches.youtube.video.speed.custom.TapAndHoldSpeedFingerprint
+import app.morphe.patches.youtube.video.videoid.hookVideoId
+import app.morphe.patches.youtube.video.videoid.videoIdPatch
 import app.morphe.util.addInstructionsAtControlFlowLabel
 import app.morphe.util.findInstructionIndicesReversedOrThrow
 import app.morphe.util.fiveRegisters
@@ -123,7 +127,10 @@ val hideLayoutComponentsPatch = bytecodePatch(
         treeNodeElementHookPatch,
         inclusiveSpanPatch,
         textComponentPatch,
-        lithoSpannableStringPatch
+        lithoSpannableStringPatch,
+        lithoRelayoutPatch,
+        videoInformationPatch,
+        videoIdPatch
     )
 
     compatibleWith(COMPATIBILITY_YOUTUBE)
@@ -264,6 +271,7 @@ val hideLayoutComponentsPatch = bytecodePatch(
                     SwitchPreference("morphe_hide_keyword_content_home"),
                     SwitchPreference("morphe_hide_keyword_content_search"),
                     SwitchPreference("morphe_hide_keyword_content_subscriptions"),
+                    SwitchPreference("morphe_hide_keyword_content_check_subtitles", summary = true),
                     SwitchPreference("morphe_hide_keyword_content_use_and_operator", summary = true),
                     SwitchPreference("morphe_hide_keyword_content_use_regex", summary = true),
                     SwitchPreference("morphe_hide_keyword_content_case_sensitive", summary = true),
@@ -576,6 +584,7 @@ val hideLayoutComponentsPatch = bytecodePatch(
 
         hookLithoSpannableString(COMMENTS_FILTER)
         hookLithoSpannableString(KEYWORD_FILTER)
+        hookVideoId("$KEYWORD_FILTER->onVideoIdLoaded")
 
         Fingerprint(
             definingClass = "Lcom/facebook/litho/ComponentHost;",

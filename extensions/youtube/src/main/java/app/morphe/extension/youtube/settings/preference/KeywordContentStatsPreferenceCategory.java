@@ -46,7 +46,7 @@ import app.morphe.extension.youtube.settings.Settings;
 
 /**
  * Populated at runtime with rows for keyword filter diagnostics and stats:
- * • recent filter matches log (shows exact triggered word, matched text with inline highlight, rule, and source)
+ * • recent filter matches log (shows matched text with inline highlighted trigger word)
  * • videos hidden in the last 24 hours (total + 4-source breakdown; tap resets the 24h tracker)
  * • videos hidden all time (total + 4-source breakdown; tap resets counters and 24h tracker)
  */
@@ -111,11 +111,7 @@ public class KeywordContentStatsPreferenceCategory extends PreferenceCategory {
         if (logs.isEmpty()) {
             matchLogPref.setSummary(str("morphe_hide_keyword_log_summary_empty"));
         } else {
-            MatchLogEntry latest = logs.get(0);
-            matchLogPref.setSummary(str("morphe_hide_keyword_log_summary",
-                    nf.format(logs.size()),
-                    latest.matchedWord(),
-                    truncate(latest.matchedText(), 42)));
+            matchLogPref.setSummary(str("morphe_hide_keyword_log_summary", nf.format(logs.size())));
         }
         matchLogPref.setOnPreferenceClickListener(pref -> {
             showMatchLogDialog();
@@ -187,7 +183,7 @@ public class KeywordContentStatsPreferenceCategory extends PreferenceCategory {
             return;
         }
 
-        SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
+        SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm", Locale.getDefault());
         SpannableStringBuilder formatted = new SpannableStringBuilder();
         StringBuilder plainText = new StringBuilder();
 
@@ -199,40 +195,15 @@ public class KeywordContentStatsPreferenceCategory extends PreferenceCategory {
             }
 
             String timeStr = timeFormat.format(new Date(entry.timestampMs()));
-            String modeLabel = entry.debugMode() ? "DEBUG" : "HIDE";
-            String header = (i + 1) + ". [" + timeStr + " • " + entry.source().name() + " • " + modeLabel + "]\n";
-            int headerStart = formatted.length();
-            formatted.append(header);
-            formatted.setSpan(new StyleSpan(Typeface.BOLD), headerStart, formatted.length(),
+            String prefix = (i + 1) + ". [" + entry.source().name() + " • " + timeStr + "] ";
+            int prefixStart = formatted.length();
+            formatted.append(prefix);
+            formatted.setSpan(new StyleSpan(Typeface.BOLD), prefixStart, formatted.length(),
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            plainText.append(header);
 
-            formatted.append("🎯 ");
-            String wordBadge = " «" + entry.matchedWord() + "» ";
-            int badgeStart = formatted.length();
-            formatted.append(wordBadge);
-            formatted.setSpan(new BackgroundColorSpan(0xFFD32F2F), badgeStart, formatted.length(),
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            formatted.setSpan(new ForegroundColorSpan(0xFFFFFFFF), badgeStart, formatted.length(),
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            formatted.setSpan(new StyleSpan(Typeface.BOLD), badgeStart, formatted.length(),
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            formatted.append("\n");
-            plainText.append("Trigger: «").append(entry.matchedWord()).append("»\n");
-
-            formatted.append("📄 ");
             appendHighlightedText(formatted, entry.matchedText(), entry.matchedWord());
-            formatted.append("\n");
-            plainText.append("Text: ").append(entry.matchedText()).append("\n");
-
-            String ruleShort = truncate(entry.ruleDisplay(), 80);
-            String metaLine = "⚙ " + ruleShort + (entry.videoId() != null ? " • ID: " + entry.videoId() : "");
-            int metaStart = formatted.length();
-            formatted.append(metaLine);
-            formatted.setSpan(new ForegroundColorSpan(0xFF9E9E9E), metaStart, formatted.length(),
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            plainText.append("Rule: ").append(entry.ruleDisplay())
-                    .append(entry.videoId() != null ? " | ID: " + entry.videoId() : "");
+            plainText.append(prefix).append(entry.matchedText())
+                    .append(" («").append(entry.matchedWord()).append("»)");
         }
 
         Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
@@ -296,11 +267,6 @@ public class KeywordContentStatsPreferenceCategory extends PreferenceCategory {
         sb.setSpan(new BackgroundColorSpan(0xFFD32F2F), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         sb.setSpan(new ForegroundColorSpan(0xFFFFFFFF), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         sb.setSpan(new StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-    }
-
-    private static String truncate(String s, int maxLen) {
-        if (s == null || s.length() <= maxLen) return s == null ? "" : s;
-        return s.substring(0, maxLen - 1) + "…";
     }
 
     private void showResetDialog(String title, Runnable onConfirm) {

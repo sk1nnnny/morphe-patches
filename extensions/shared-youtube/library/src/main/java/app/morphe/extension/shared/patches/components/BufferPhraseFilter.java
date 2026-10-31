@@ -262,12 +262,14 @@ public abstract class BufferPhraseFilter extends Filter {
                 onDebugMatch(matched, buffer, accessibility, path, matchedGroup, contextInterface);
                 return false;
             }
-            updateStats(true, matched);
+            if (isBaseFeedGroup(matchedGroup)) {
+                updateStats(true, matched);
+            }
             onHideConfirmed(matched);
             return true;
         }
 
-        if (!isDebugModeEnabled()) {
+        if (!isDebugModeEnabled() && isBaseFeedGroup(matchedGroup)) {
             updateStats(false, null);
         }
         return false;

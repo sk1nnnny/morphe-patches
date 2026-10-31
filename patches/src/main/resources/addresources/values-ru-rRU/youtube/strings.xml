@@ -311,13 +311,17 @@ Second \"item\" text"</string>
   <string name="morphe_hide_keyword_content_case_sensitive_summary">Когда отключено (по умолчанию), ключевые слова ищутся без учета регистра (например, «ии» найдет и «ИИ», и «ии»)</string>
   <string name="morphe_hide_keyword_content_debug_title">Режим отладки (затухание вместо скрытия)</string>
   <string name="morphe_hide_keyword_content_debug_summary">Затемняет совпавшие видео и комментарии вместо их скрытия и показывает плашку с правилом, по которому они сработали</string>
+  <string name="morphe_hide_keyword_content_check_subtitles_title">Проверять субтитры видео по фильтру</string>
+  <string name="morphe_hide_keyword_content_check_subtitles_summary">Ищет слова из фильтра в субтитрах открытого видео и нативно показывает найденные фрагменты с таймкодами в описании (без скрытия ролика)</string>
+  <string name="morphe_hide_keyword_subtitles_inline">В субтитрах: %s</string>
+  <string name="morphe_hide_keyword_subtitles_header">В субтитрах:</string>
   <string name="morphe_hide_keyword_debug_badge">🔍 Триггер: %s</string>
-  <string name="morphe_hide_keyword_log_title">📋 Журнал срабатываний фильтра</string>
-  <string name="morphe_hide_keyword_log_summary">Записей: %1$s • Последний триггер: «%2$s» (%3$s)</string>
-  <string name="morphe_hide_keyword_log_summary_empty">В этой сессии пока нет срабатываний • Нажмите для просмотра</string>
+  <string name="morphe_hide_keyword_log_title">Журнал срабатываний фильтра</string>
+  <string name="morphe_hide_keyword_log_summary">Записей: %s</string>
+  <string name="morphe_hide_keyword_log_summary_empty">В этой сессии пока нет срабатываний</string>
   <string name="morphe_hide_keyword_log_empty">В текущей сессии ни одно видео или комментарий ещё не сработали по правилам фильтра.</string>
-  <string name="morphe_hide_keyword_log_clear">Очистить журнал</string>
-  <string name="morphe_hide_keyword_log_copy">Скопировать журнал в буфер обмена</string>
+  <string name="morphe_hide_keyword_log_clear">Очистить</string>
+  <string name="morphe_hide_keyword_log_copy">Скопировать</string>
   <string name="morphe_hide_keyword_log_copied">Журнал скопирован в буфер обмена</string>
   <string name="morphe_hide_keyword_content_phrases_title">Ключевые слова для скрытия</string>
   <!-- For localization, it is preferred, but not required, if 'LeBlanc' is replaced with a localized name or a familiar word that has upper case letters in the middle of the word.
