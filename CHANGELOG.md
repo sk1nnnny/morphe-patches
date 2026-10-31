@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.0...v1.0.1) (2026-10-31)
+
+### 🐛 Bug Fixes
+
+* 111 ([197554d](https://github.com/sk1nnnny/morphe-patches/commit/197554d672e0f6c858fa894b6d41789467ff0537))
+* 4748 ([0f078ff](https://github.com/sk1nnnny/morphe-patches/commit/0f078ffa5a79de86209cafde860b1c008a1a0583))
+
 ## 1.0.0 (2026-10-31)
 
 ### ⚠ BREAKING CHANGES
