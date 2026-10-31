@@ -10,16 +10,29 @@ package app.morphe.extension.youtube.settings.preference;
 import static app.morphe.extension.shared.StringRef.str;
 
 import android.app.Dialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Typeface;
 import android.preference.Preference;
 import android.preference.PreferenceCategory;
 import android.preference.PreferenceManager;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.BackgroundColorSpan;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
 import android.util.AttributeSet;
 import android.util.Pair;
+import android.widget.Button;
 import android.widget.LinearLayout;
 
 import java.text.NumberFormat;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import app.morphe.extension.shared.Logger;
@@ -28,12 +41,14 @@ import app.morphe.extension.shared.patches.components.BufferPhraseFilter.Source;
 import app.morphe.extension.shared.settings.Setting;
 import app.morphe.extension.shared.ui.CustomDialog;
 import app.morphe.extension.youtube.patches.components.KeywordContentFilter;
+import app.morphe.extension.youtube.patches.components.KeywordContentFilter.MatchLogEntry;
 import app.morphe.extension.youtube.settings.Settings;
 
 /**
- * Populated at runtime with two rows for keyword filter stats:
- *   • videos hidden in the last 24 hours (total + 4-source breakdown; tap resets the 24h tracker)
- *   • videos hidden all time (total + 4-source breakdown; tap resets counters and 24h tracker)
+ * Populated at runtime with rows for keyword filter diagnostics and stats:
+ * • recent filter matches log (shows exact triggered word, matched text with inline highlight, rule, and source)
+ * • videos hidden in the last 24 hours (total + 4-source breakdown; tap resets the 24h tracker)
+ * • videos hidden all time (total + 4-source breakdown; tap resets counters and 24h tracker)
  */
 @SuppressWarnings({"deprecation", "unused"})
 public class KeywordContentStatsPreferenceCategory extends PreferenceCategory {
@@ -90,6 +105,24 @@ public class KeywordContentStatsPreferenceCategory extends PreferenceCategory {
     private void buildRows() {
         Context context = getContext();
 
+        List<MatchLogEntry> logs = KeywordContentFilter.getRecentMatchLogs();
+        Preference matchLogPref = new Preference(context);
+        matchLogPref.setTitle(str("morphe_hide_keyword_log_title"));
+        if (logs.isEmpty()) {
+            matchLogPref.setSummary(str("morphe_hide_keyword_log_summary_empty"));
+        } else {
+            MatchLogEntry latest = logs.get(0);
+            matchLogPref.setSummary(str("morphe_hide_keyword_log_summary",
+                    nf.format(logs.size()),
+                    latest.matchedWord(),
+                    truncate(latest.matchedText(), 42)));
+        }
+        matchLogPref.setOnPreferenceClickListener(pref -> {
+            showMatchLogDialog();
+            return true;
+        });
+        addPreference(matchLogPref);
+
         final String homeCount24h = nf.format(KeywordContentFilter.hidesInLast24Hours(Source.HOME));
         final String subsCount24h = nf.format(KeywordContentFilter.hidesInLast24Hours(Source.SUBSCRIPTIONS));
         final String searchCount24h = nf.format(KeywordContentFilter.hidesInLast24Hours(Source.SEARCH));
@@ -132,6 +165,142 @@ public class KeywordContentStatsPreferenceCategory extends PreferenceCategory {
             return true;
         });
         addPreference(hiddenAllTime);
+    }
+
+    private void showMatchLogDialog() {
+        Context context = getContext();
+        List<MatchLogEntry> logs = KeywordContentFilter.getRecentMatchLogs();
+        if (logs.isEmpty()) {
+            Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
+                    context,
+                    str("morphe_hide_keyword_log_title"),
+                    str("morphe_hide_keyword_log_empty"),
+                    null,
+                    null,
+                    () -> {},
+                    null,
+                    null,
+                    null,
+                    true
+            );
+            dialogPair.first.show();
+            return;
+        }
+
+        SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
+        SpannableStringBuilder formatted = new SpannableStringBuilder();
+        StringBuilder plainText = new StringBuilder();
+
+        for (int i = 0, size = logs.size(); i < size; i++) {
+            MatchLogEntry entry = logs.get(i);
+            if (i > 0) {
+                formatted.append("\n\n");
+                plainText.append("\n\n");
+            }
+
+            String timeStr = timeFormat.format(new Date(entry.timestampMs()));
+            String modeLabel = entry.debugMode() ? "DEBUG" : "HIDE";
+            String header = (i + 1) + ". [" + timeStr + " • " + entry.source().name() + " • " + modeLabel + "]\n";
+            int headerStart = formatted.length();
+            formatted.append(header);
+            formatted.setSpan(new StyleSpan(Typeface.BOLD), headerStart, formatted.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            plainText.append(header);
+
+            formatted.append("🎯 ");
+            String wordBadge = " «" + entry.matchedWord() + "» ";
+            int badgeStart = formatted.length();
+            formatted.append(wordBadge);
+            formatted.setSpan(new BackgroundColorSpan(0xFFD32F2F), badgeStart, formatted.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            formatted.setSpan(new ForegroundColorSpan(0xFFFFFFFF), badgeStart, formatted.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            formatted.setSpan(new StyleSpan(Typeface.BOLD), badgeStart, formatted.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            formatted.append("\n");
+            plainText.append("Trigger: «").append(entry.matchedWord()).append("»\n");
+
+            formatted.append("📄 ");
+            appendHighlightedText(formatted, entry.matchedText(), entry.matchedWord());
+            formatted.append("\n");
+            plainText.append("Text: ").append(entry.matchedText()).append("\n");
+
+            String ruleShort = truncate(entry.ruleDisplay(), 80);
+            String metaLine = "⚙ " + ruleShort + (entry.videoId() != null ? " • ID: " + entry.videoId() : "");
+            int metaStart = formatted.length();
+            formatted.append(metaLine);
+            formatted.setSpan(new ForegroundColorSpan(0xFF9E9E9E), metaStart, formatted.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            plainText.append("Rule: ").append(entry.ruleDisplay())
+                    .append(entry.videoId() != null ? " | ID: " + entry.videoId() : "");
+        }
+
+        Pair<Dialog, LinearLayout> dialogPair = CustomDialog.create(
+                context,
+                str("morphe_hide_keyword_log_title"),
+                formatted,
+                null,
+                null,
+                () -> {},
+                null,
+                str("morphe_hide_keyword_log_clear"),
+                () -> {
+                    KeywordContentFilter.clearRecentMatchLogs();
+                    refresh();
+                },
+                true
+        );
+
+        Button copyBtn = CustomDialog.createButton(
+                context,
+                null,
+                str("morphe_hide_keyword_log_copy"),
+                () -> {
+                    ClipboardManager cm = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        cm.setPrimaryClip(ClipData.newPlainText("KeywordFilterLog", plainText.toString()));
+                        Utils.showToastShort(str("morphe_hide_keyword_log_copied"));
+                    }
+                },
+                false,
+                false
+        );
+        dialogPair.second.addView(copyBtn);
+        dialogPair.first.show();
+    }
+
+    private static void appendHighlightedText(SpannableStringBuilder sb, String text, String word) {
+        int base = sb.length();
+        sb.append(text);
+        if (word == null || word.isEmpty()) return;
+
+        String lowerText = text.toLowerCase(Locale.ROOT);
+        String lowerWord = word.toLowerCase(Locale.ROOT);
+        if (lowerText.length() != text.length() || lowerWord.length() != word.length()) {
+            int idx = text.indexOf(word);
+            if (idx >= 0) {
+                applyWordHighlight(sb, base + idx, base + idx + word.length());
+            }
+            return;
+        }
+        int from = 0;
+        while (from < lowerText.length()) {
+            int idx = lowerText.indexOf(lowerWord, from);
+            if (idx < 0) break;
+            applyWordHighlight(sb, base + idx, base + idx + lowerWord.length());
+            from = idx + lowerWord.length();
+        }
+    }
+
+    private static void applyWordHighlight(SpannableStringBuilder sb, int start, int end) {
+        sb.setSpan(new BackgroundColorSpan(0xFFD32F2F), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.setSpan(new ForegroundColorSpan(0xFFFFFFFF), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.setSpan(new StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    }
+
+    private static String truncate(String s, int maxLen) {
+        if (s == null || s.length() <= maxLen) return s == null ? "" : s;
+        return s.substring(0, maxLen - 1) + "…";
     }
 
     private void showResetDialog(String title, Runnable onConfirm) {

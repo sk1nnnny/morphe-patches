@@ -324,7 +324,14 @@ Changes include:
     <string name="morphe_hide_keyword_content_case_sensitive_summary">When disabled (default), keywords match regardless of uppercase or lowercase letters</string>
     <string name="morphe_hide_keyword_content_debug_title">Debug mode (dim instead of hiding)</string>
     <string name="morphe_hide_keyword_content_debug_summary">Dims matched videos and comments instead of hiding them and displays the exact rule that triggered the match</string>
-    <string name="morphe_hide_keyword_debug_badge">🔍 Rule: %s</string>
+    <string name="morphe_hide_keyword_debug_badge">🔍 Trigger: %s</string>
+    <string name="morphe_hide_keyword_log_title">📋 Filter match log</string>
+    <string name="morphe_hide_keyword_log_summary">Entries: %1$s • Latest trigger: «%2$s» (%3$s)</string>
+    <string name="morphe_hide_keyword_log_summary_empty">No matches in this session yet • Tap to view log</string>
+    <string name="morphe_hide_keyword_log_empty">No videos or comments have been matched by the keyword filter in this session yet.</string>
+    <string name="morphe_hide_keyword_log_clear">Clear log</string>
+    <string name="morphe_hide_keyword_log_copy">Copy log to clipboard</string>
+    <string name="morphe_hide_keyword_log_copied">Match log copied to clipboard</string>
     <string name="morphe_hide_keyword_content_phrases_title">Keywords to hide</string>
     <!-- For localization, it is preferred, but not required, if 'LeBlanc' is replaced with a localized name or a familiar word that has upper case letters in the middle of the word.
          This is because keywords can be in any language, and showing an example in the localized script helps convey this. -->

@@ -16,7 +16,7 @@
  * https://github.com/MorpheApp/morphe-patches/commit/f5371ca998c019609c2b5558b3408ab1fec065c8
  * https://github.com/MorpheApp/morphe-patches/commit/017eac71a3f9542b8ad6221e3600797d6b97fae4
  * https://github.com/MorpheApp/morphe-patches/pull/1972
- * 
+ *
  * See the included NOTICE file for GPLv3 Section 7 terms that apply to Morphe contributions.
  */
 
@@ -41,7 +41,6 @@ import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.style.BackgroundColorSpan;
 import android.text.style.ForegroundColorSpan;
-import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
 import android.view.View;
 import android.view.ViewGroup;
@@ -55,8 +54,12 @@ import com.facebook.litho.ComponentHost;
 import com.facebook.litho.TextContent;
 
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -89,7 +92,7 @@ import app.morphe.extension.youtube.shared.PlayerType;
  * <p>
  * Extracts human-readable text fields from the Litho element protocol buffer (via {@link ProtoNode})
  * rather than scanning raw binary/Base64/URL bytes, preventing false-positive matches on inline
- * playback data, thumbnail signatures, video IDs, and internal tracking tokens.
+ * playback data, thumbnail signatures, video IDs, UI buttons, and internal tracking tokens.
  */
 @SuppressWarnings({"unused", "unchecked"})
 public final class KeywordContentFilter extends BufferPhraseFilter {
@@ -101,12 +104,18 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     private static final int MINIMUM_KEYWORD_LENGTH = 3;
 
     /**
-     * Field number of {@code youtube.api.innertube.InnertubeCommand} inside command wrappers.
-     * Contains navigation endpoints, clickTrackingParams, inlinePlayback data, and search query echoes,
-     * which are not visible user text (except {@code /@handle} inside {@code browseEndpoint}).
+     * Protobuf field numbers in YouTube's Litho elements.
      */
     private static final int INNERTUBE_COMMAND_FIELD_NUMBER = 169495254;
     private static final int BROWSE_ENDPOINT_FIELD_NUMBER = 48687626;
+    private static final int LOCKUP_METADATA_VIEW_MODEL_FIELD_NUMBER = 8178;
+    private static final int LOCKUP_METADATA_TITLE_FIELD_NUMBER = 1;
+    private static final int LOCKUP_METADATA_CONTENT_FIELD_NUMBER = 3;
+    private static final int BUTTON_VIEW_MODEL_FIELD_NUMBER = 461054335;
+    private static final int TOGGLE_BUTTON_VIEW_MODEL_FIELD_NUMBER = 479644279;
+    private static final int LIKE_BUTTON_VIEW_MODEL_FIELD_NUMBER = 484585818;
+    private static final int ADD_TO_PLAYLIST_BUTTON_VIEW_MODEL_FIELD_NUMBER = 484598023;
+    private static final int RENDERER_CONTEXT_FIELD_NUMBER = 997;
 
     /** Litho component identifier pattern, such as 'video_lockup_with_attachment.eml-fe|c0c4a49b6544b5fb'. */
     private static final Pattern IDENTIFIER_PATTERN =
@@ -115,10 +124,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     /** YouTube channel ID pattern (UC followed by 22 base64-url chars). */
     private static final Pattern CHANNEL_ID_PATTERN =
             Pattern.compile("^UC[A-Za-z0-9_-]{22}$");
-
-    /** Base64 / URL-encoded entity keys and opaque tokens without spaces. */
-    private static final Pattern ENTITY_KEY_PATTERN =
-            Pattern.compile("^[A-Za-z0-9+/=_-]{12,}(?:%3D)*$");
 
     /** Short duration badge text such as 4:05 or 1:02:33. */
     private static final Pattern DURATION_BADGE_PATTERN =
@@ -187,16 +192,31 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     private static volatile KeywordContentFilter instance;
 
     /**
-     * Thread-safe LRU caches mapping matched texts and video IDs to the rule description that
-     * triggered them when Debug Mode is active.
+     * Details of a match for Debug Mode and Match History Log.
      */
-    private static final int MAX_DEBUG_CACHE_SIZE = 1500;
-    private static final Map<String, String> debugPrimaryTextToRule =
+    public record MatchLogEntry(
+            long timestampMs,
+            Source source,
+            String matchedWord,
+            String matchedText,
+            String ruleDisplay,
+            @Nullable String videoId,
+            boolean debugMode
+    ) {}
+
+    private static final int MAX_MATCH_LOG_ENTRIES = 60;
+    private static final Deque<MatchLogEntry> recentMatchLogs = new ArrayDeque<>(MAX_MATCH_LOG_ENTRIES);
+    private static final Set<String> recentLoggedKeys = new HashSet<>();
+
+    /**
+     * Thread-safe LRU cache mapping the exact matched text (or videoId for multi-clause '&' rules)
+     * to its {@link MatchDetails}. Never stores non-matching texts.
+     */
+    private record MatchDetails(String matchedWord, String matchedText, String ruleDisplay) {}
+
+    private static final int MAX_DEBUG_CACHE_SIZE = 1000;
+    private static final Map<String, MatchDetails> debugMatchedTextMap =
             Collections.synchronizedMap(Utils.createSizeRestrictedMap(MAX_DEBUG_CACHE_SIZE, true));
-    private static final Map<String, String> debugElementTextToRule =
-            Collections.synchronizedMap(Utils.createSizeRestrictedMap(MAX_DEBUG_CACHE_SIZE, true));
-    private static final Map<String, String> debugVideoIdToRule =
-            Collections.synchronizedMap(Utils.createSizeRestrictedMap(500, true));
 
     /** Root ComponentHosts that currently have a DebugCardOverlay attached. Accessed on main thread. */
     private static final Map<ComponentHost, DebugCardOverlay> debugOverlays = new WeakHashMap<>();
@@ -226,24 +246,63 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             this.literalPhrase = literalPhrase;
         }
 
-        boolean matchesText(String text) {
-            if (text.isEmpty()) return false;
+        /**
+         * @return the exact matched word/substring inside {@code text}, or {@code null} if no match.
+         */
+        @Nullable
+        String findFirstMatchedWord(String text) {
+            if (text.isEmpty()) return null;
             if (isRegex && regexPattern != null) {
-                return regexPattern.matcher(text).find();
+                Matcher m = regexPattern.matcher(text);
+                while (m.find()) {
+                    String g = m.group();
+                    if (!g.isEmpty()) {
+                        return g;
+                    }
+                }
+                return null;
             }
             if (isWholeWord) {
-                return findWholeWord(text, literalPhrase, caseSensitive);
+                int idx = findWholeWordIndex(text, literalPhrase, caseSensitive, 0);
+                return idx >= 0 ? text.substring(idx, idx + literalPhrase.length()) : null;
             }
-            return containsSubstring(text, literalPhrase, caseSensitive);
+            int idx = findSubstringIndex(text, literalPhrase, caseSensitive, 0);
+            return idx >= 0 ? text.substring(idx, idx + literalPhrase.length()) : null;
         }
 
-        boolean matchesAnyText(List<String> texts) {
-            for (int i = 0, size = texts.size(); i < size; i++) {
-                if (matchesText(texts.get(i))) {
-                    return true;
+        /**
+         * Appends all character index ranges {@code [start, end]} matched by this clause in {@code text}.
+         */
+        void collectMatchRanges(String text, List<int[]> rangesOut) {
+            if (text.isEmpty()) return;
+            if (isRegex && regexPattern != null) {
+                Matcher m = regexPattern.matcher(text);
+                while (m.find()) {
+                    if (m.end() > m.start()) {
+                        rangesOut.add(new int[]{m.start(), m.end()});
+                    }
                 }
+                return;
             }
-            return false;
+            if (isWholeWord) {
+                final int len = literalPhrase.length();
+                int idx = 0;
+                while (idx <= text.length() - len) {
+                    int found = findWholeWordIndex(text, literalPhrase, caseSensitive, idx);
+                    if (found < 0) break;
+                    rangesOut.add(new int[]{found, found + len});
+                    idx = found + Math.max(1, len);
+                }
+                return;
+            }
+            final int len = literalPhrase.length();
+            int idx = 0;
+            while (idx <= text.length() - len) {
+                int found = findSubstringIndex(text, literalPhrase, caseSensitive, idx);
+                if (found < 0) break;
+                rangesOut.add(new int[]{found, found + len});
+                idx = found + Math.max(1, len);
+            }
         }
     }
 
@@ -261,62 +320,77 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         }
 
         /**
-         * @return the first text in {@code texts} that satisfied this rule if all clauses match
-         *         across {@code texts}, or {@code null} if the rule does not match.
+         * @return {@link MatchDetails} for each clause that matched if ALL clauses match across
+         *         {@code texts}, or {@code null} if any clause did not match.
          */
         @Nullable
-        String matchAcrossTexts(List<String> texts) {
-            String firstMatchedText = null;
+        List<MatchDetails> matchAcrossTexts(List<String> texts) {
+            List<MatchDetails> matches = new ArrayList<>(clauses.size());
             for (int i = 0, size = clauses.size(); i < size; i++) {
                 Clause clause = clauses.get(i);
-                String clauseMatchedText = null;
+                MatchDetails found = null;
                 for (int j = 0, textCount = texts.size(); j < textCount; j++) {
                     String t = texts.get(j);
-                    if (clause.matchesText(t)) {
-                        clauseMatchedText = t;
+                    String word = clause.findFirstMatchedWord(t);
+                    if (word != null) {
+                        found = new MatchDetails(word, t, displayRule);
                         break;
                     }
                 }
-                if (clauseMatchedText == null) {
+                if (found == null) {
                     return null;
                 }
-                if (firstMatchedText == null) {
-                    firstMatchedText = clauseMatchedText;
-                }
+                matches.add(found);
             }
-            return firstMatchedText;
+            return matches;
         }
 
-        boolean matchesSingleText(String text) {
-            for (int i = 0, size = clauses.size(); i < size; i++) {
-                if (!clauses.get(i).matchesText(text)) {
-                    return false;
+        /**
+         * Collects all matched character ranges {@code [start, end]} in {@code text} for clauses
+         * of this rule. For single-clause rules, checks that clause; for '&' rules, highlights
+         * any clause that matches when the text was recorded as part of a matched card.
+         */
+        void collectMatchRangesInText(String text, boolean allowPartialAndClauses, List<int[]> rangesOut) {
+            if (!allowPartialAndClauses && clauses.size() > 1) {
+                for (int i = 0, size = clauses.size(); i < size; i++) {
+                    if (clauses.get(i).findFirstMatchedWord(text) == null) {
+                        return;
+                    }
                 }
             }
-            return true;
+            for (int i = 0, size = clauses.size(); i < size; i++) {
+                clauses.get(i).collectMatchRanges(text, rangesOut);
+            }
         }
     }
 
     /**
-     * Span attached to Litho texts that matched a keyword rule in Debug Mode.
+     * Span attached to Litho texts that actually matched a keyword rule in Debug Mode.
      * Intentionally does NOT implement {@link android.text.NoCopySpan} so Litho preserves it
      * when copying text into {@link ComponentHost#getTextContent()}.
      */
     public static final class DebugRuleSpan {
+        public final String matchedWord;
+        public final String matchedText;
         public final String rule;
 
-        DebugRuleSpan(String rule) {
+        DebugRuleSpan(String matchedWord, String matchedText, String rule) {
+            this.matchedWord = matchedWord;
+            this.matchedText = matchedText;
             this.rule = rule;
         }
 
         @Override
         public boolean equals(Object obj) {
-            return obj instanceof DebugRuleSpan other && Objects.equals(rule, other.rule);
+            return obj instanceof DebugRuleSpan other
+                    && Objects.equals(matchedWord, other.matchedWord)
+                    && Objects.equals(matchedText, other.matchedText)
+                    && Objects.equals(rule, other.rule);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hashCode(rule);
+            return Objects.hash(matchedWord, matchedText, rule);
         }
     }
 
@@ -333,35 +407,96 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         return phrase.substring(1, phrase.length() - 1);
     }
 
-    private static boolean containsSubstring(String text, String sub, boolean caseSensitive) {
+    private static int findSubstringIndex(String text, String sub, boolean caseSensitive, int fromIndex) {
         final int subLen = sub.length();
         final int max = text.length() - subLen;
-        if (max < 0) return false;
+        if (max < 0 || subLen == 0 || fromIndex > max) return -1;
         if (caseSensitive) {
-            return text.contains(sub);
+            return text.indexOf(sub, Math.max(0, fromIndex));
         }
-        for (int i = 0; i <= max; i++) {
+        for (int i = Math.max(0, fromIndex); i <= max; i++) {
             if (text.regionMatches(true, i, sub, 0, subLen)) {
-                return true;
+                return i;
             }
         }
-        return false;
+        return -1;
     }
 
-    private static boolean findWholeWord(String text, String word, boolean caseSensitive) {
+    private static int findWholeWordIndex(String text, String word, boolean caseSensitive, int fromIndex) {
         final int wordLen = word.length();
         final int textLen = text.length();
         final int max = textLen - wordLen;
-        if (max < 0 || wordLen == 0) return false;
+        if (max < 0 || wordLen == 0 || fromIndex > max) return -1;
 
-        for (int i = 0; i <= max; i++) {
+        for (int i = Math.max(0, fromIndex); i <= max; i++) {
             if (text.regionMatches(!caseSensitive, i, word, 0, wordLen)) {
                 if (keywordMatchIsWholeWord(text, i, wordLen)) {
-                    return true;
+                    return i;
                 }
             }
         }
-        return false;
+        return -1;
+    }
+
+    /**
+     * Rewrites {@code \w}, {@code \W}, {@code \b}, and {@code \B} in a regex pattern into
+     * Unicode-aware {@code [\p{L}\p{M}\p{N}_]} equivalents so that Cyrillic and other non-ASCII
+     * scripts are properly treated as word characters by Android's ICU regex engine.
+     */
+    public static String toUnicodeRegex(String pattern) {
+        final String wordChars = "\\p{L}\\p{M}\\p{N}_";
+        final String wordClass = "[" + wordChars + "]";
+        final String nonWordClass = "[^" + wordChars + "]";
+        final String wordBoundary = "(?:(?<=" + wordClass + ")(?!" + wordClass + ")|(?<!" + wordClass + ")(?=" + wordClass + "))";
+        final String nonWordBoundary = "(?:(?<=" + wordClass + ")(?=" + wordClass + ")|(?<!" + wordClass + ")(?!" + wordClass + "))";
+
+        StringBuilder out = new StringBuilder(pattern.length() + 32);
+        int inCharClass = 0;
+        final int n = pattern.length();
+        int i = 0;
+        while (i < n) {
+            char c = pattern.charAt(i);
+            if (c == '\\') {
+                if (i + 1 < n) {
+                    char nxt = pattern.charAt(i + 1);
+                    if (nxt == 'w') {
+                        out.append(inCharClass > 0 ? wordChars : wordClass);
+                        i += 2;
+                        continue;
+                    } else if (nxt == 'W' && inCharClass == 0) {
+                        out.append(nonWordClass);
+                        i += 2;
+                        continue;
+                    } else if (nxt == 'b' && inCharClass == 0) {
+                        out.append(wordBoundary);
+                        i += 2;
+                        continue;
+                    } else if (nxt == 'B' && inCharClass == 0) {
+                        out.append(nonWordBoundary);
+                        i += 2;
+                        continue;
+                    } else {
+                        out.append(c).append(nxt);
+                        i += 2;
+                        continue;
+                    }
+                } else {
+                    out.append(c);
+                    i++;
+                    continue;
+                }
+            } else if (c == '[') {
+                inCharClass++;
+                out.append(c);
+            } else if (c == ']' && inCharClass > 0) {
+                inCharClass--;
+                out.append(c);
+            } else {
+                out.append(c);
+            }
+            i++;
+        }
+        return out.toString();
     }
 
     @Nullable
@@ -410,7 +545,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 if (forceCaseInsensitive && !forceCaseSensitive) {
                     flags |= Pattern.CASE_INSENSITIVE;
                 }
-                Pattern pattern = Pattern.compile(regexBody, flags);
+                Pattern pattern = Pattern.compile(toUnicodeRegex(regexBody), flags);
                 return new Clause(trimmed, true, false, forceCaseSensitive, pattern, regexBody);
             } catch (PatternSyntaxException ex) {
                 Logger.printDebug(() -> "Invalid regex keyword pattern: " + trimmed, ex);
@@ -435,7 +570,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 if (!caseSensitiveSetting) {
                     flags |= Pattern.CASE_INSENSITIVE;
                 }
-                Pattern pattern = Pattern.compile(trimmed, flags);
+                Pattern pattern = Pattern.compile(toUnicodeRegex(trimmed), flags);
                 return new Clause(trimmed, true, false, caseSensitiveSetting, pattern, trimmed);
             } catch (PatternSyntaxException ex) {
                 Logger.printDebug(() -> "Invalid regex keyword pattern: " + trimmed, ex);
@@ -504,7 +639,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 clauses.add(c);
             }
 
-            // Deduplicate identical rules (e.g. "ai" and "AI" when case-insensitive is active).
             StringBuilder canonicalKey = new StringBuilder();
             for (Clause c : clauses) {
                 if (canonicalKey.length() > 0) canonicalKey.append(" & ");
@@ -524,9 +658,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         lastUseRegex = useRegex;
         lastCaseSensitive = caseSensitive;
 
-        debugPrimaryTextToRule.clear();
-        debugElementTextToRule.clear();
-        debugVideoIdToRule.clear();
+        debugMatchedTextMap.clear();
 
         Logger.printDebug(() -> "Parsed " + rules.size() + " keyword filter rules");
     }
@@ -575,18 +707,14 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
     @Override
     protected boolean isActiveForFeedContext(ContextInterface contextInterface) {
-        // Must check player type first, as search bar can be active behind the player.
         if (PlayerType.getCurrent().isMaximizedOrFullscreen()) {
-            // Consider the under-video related results the same as the home feed.
             return Settings.HIDE_KEYWORD_CONTENT_HOME.get();
         }
 
-        // Must check second, as search can be from any tab.
         if (NavigationBar.isSearchBarActive()) {
             return Settings.HIDE_KEYWORD_CONTENT_SEARCH.get();
         }
 
-        // Avoid checking navigation button status if all other settings are off.
         final boolean hideHome = Settings.HIDE_KEYWORD_CONTENT_HOME.get();
         final boolean hideSubscriptions = Settings.HIDE_KEYWORD_CONTENT_SUBSCRIPTIONS.get();
         if (!hideHome && !hideSubscriptions) {
@@ -596,13 +724,12 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         NavigationBar.NavigationButton selectedNavButton =
                 NavigationBar.NavigationButton.getSelectedNavigationButton(contextInterface);
         if (selectedNavButton == null) {
-            return hideHome; // Unknown tab, treat the same as home.
+            return hideHome;
         }
 
         return switch (selectedNavButton) {
             case HOME -> hideHome;
             case SUBSCRIPTIONS -> hideSubscriptions;
-            // User is in the Library or notifications.
             default -> false;
         };
     }
@@ -631,41 +758,91 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
         for (int i = 0, size = rules.size(); i < size; i++) {
             KeywordRule rule = rules.get(i);
-            String matchedText = rule.matchAcrossTexts(searchableTexts);
-            if (matchedText != null) {
-                final String ruleName = rule.displayRule;
-                Logger.printDebug(() -> "Matched keyword rule: '" + ruleName + "' on text: '" + matchedText + "'");
+            List<MatchDetails> matchedClauses = rule.matchAcrossTexts(searchableTexts);
+            if (matchedClauses != null && !matchedClauses.isEmpty()) {
+                MatchDetails primary = matchedClauses.get(0);
+                Source source = detectSource(matchedGroup, contextInterface);
+                final boolean debug = isDebugModeEnabled();
 
-                if (isDebugModeEnabled()) {
-                    recordDebugMatch(ruleName, matchedText, searchableTexts, videoId);
-                } else {
-                    recordHide(matchedGroup, buffer, contextInterface, videoId);
+                // RecordONLY the specific texts that actually matched a clause!
+                for (int j = 0, cSize = matchedClauses.size(); j < cSize; j++) {
+                    MatchDetails detail = matchedClauses.get(j);
+                    debugMatchedTextMap.put(detail.matchedText(), detail);
                 }
-                return ruleName;
+
+                // Always log the match to Logcat and to the in-app Recent Matches Log!
+                recordMatchLog(source, primary.matchedWord(), primary.matchedText(),
+                        rule.displayRule, videoId, debug);
+
+                if (!debug) {
+                    recordHide(source, videoId);
+                }
+                return primary.matchedWord();
             }
         }
 
         return null;
     }
 
-    private static void recordDebugMatch(String ruleName, String primaryMatchedText,
-                                         List<String> searchableTexts, @Nullable String videoId) {
-        debugPrimaryTextToRule.put(primaryMatchedText, ruleName);
-        for (int i = 0, size = searchableTexts.size(); i < size; i++) {
-            String t = searchableTexts.get(i);
-            if (t.length() >= 4 && !isDurationOrBadgeText(t)) {
-                debugElementTextToRule.put(t, ruleName);
+    private static void recordMatchLog(Source source, String matchedWord, String matchedText,
+                                       String ruleDisplay, @Nullable String videoId, boolean debugMode) {
+        Logger.printInfo(() -> "[KeywordFilter] " + (debugMode ? "DIMMED" : "HIDDEN")
+                + " | Word: '" + matchedWord + "'"
+                + " | Text: '" + matchedText + "'"
+                + " | Rule: '" + ruleDisplay + "'"
+                + " | Source: " + source
+                + (videoId != null ? " | VideoId: " + videoId : ""));
+
+        String dedupKey = (videoId != null ? videoId : matchedText) + "|" + matchedWord;
+        synchronized (recentMatchLogs) {
+            if (!recentLoggedKeys.add(dedupKey)) {
+                return;
             }
-        }
-        if (videoId != null) {
-            debugVideoIdToRule.put(videoId, ruleName);
+            if (recentMatchLogs.size() >= MAX_MATCH_LOG_ENTRIES) {
+                MatchLogEntry removed = recentMatchLogs.removeLast();
+                String removedKey = (removed.videoId() != null ? removed.videoId() : removed.matchedText())
+                        + "|" + removed.matchedWord();
+                recentLoggedKeys.remove(removedKey);
+            }
+            recentMatchLogs.addFirst(new MatchLogEntry(
+                    System.currentTimeMillis(),
+                    source,
+                    matchedWord,
+                    matchedText,
+                    ruleDisplay,
+                    videoId,
+                    debugMode
+            ));
         }
     }
 
     /**
-     * Extracts only human-readable visible texts (titles, channel names/handles, metadata rows,
-     * accessibility labels, comments) from the protocol buffer and accessibility parameter,
-     * excluding binary blobs, inlinePlayback URLs, Base64 entity keys, video IDs, and template names.
+     * @return a snapshot of recent keyword filter matches (newest first) for the UI log dialog.
+     */
+    public static List<MatchLogEntry> getRecentMatchLogs() {
+        synchronized (recentMatchLogs) {
+            return new ArrayList<>(recentMatchLogs);
+        }
+    }
+
+    /**
+     * Clears the recent match history log.
+     */
+    public static void clearRecentMatchLogs() {
+        synchronized (recentMatchLogs) {
+            recentMatchLogs.clear();
+            recentLoggedKeys.clear();
+        }
+    }
+
+    /**
+     * Extracts only human-readable visible content texts (video title, channel name/metadata row,
+     * @handle, or comment body) from the protocol buffer.
+     * <p>
+     * When {@code LockupMetadataViewModel} (field 8178) is present on a video card, only its
+     * {@code title} (field 1) and {@code metadata} (field 3) are extracted, completely avoiding
+     * UI button labels ("Действия", "Перейти на канал", "Комментарии"), thumbnail badges, and
+     * verbose screen-reader templates.
      */
     public static List<String> extractSearchableTexts(byte[] buffer, @Nullable String accessibility,
                                                       @Nullable String videoId) {
@@ -675,13 +852,40 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         if (buffer != null && buffer.length > 0) {
             List<ProtoNode> root = ProtoNode.parse(buffer);
             if (root != null) {
-                collectReadableProtoTexts(root, videoId, results, seen);
+                List<ProtoNode> lockupMetadataNodes = new ArrayList<>();
+                findNodesByFieldNumber(root, LOCKUP_METADATA_VIEW_MODEL_FIELD_NUMBER, lockupMetadataNodes);
+
+                if (!lockupMetadataNodes.isEmpty()) {
+                    // Structured video card: extract strictly Title (1) and Channel/Metadata (3) + @handle
+                    for (int i = 0, size = lockupMetadataNodes.size(); i < size; i++) {
+                        ProtoNode metadataNode = lockupMetadataNodes.get(i);
+                        if (metadataNode.children == null) continue;
+                        for (int j = 0, cSize = metadataNode.children.size(); j < cSize; j++) {
+                            ProtoNode child = metadataNode.children.get(j);
+                            int fn = child.getFieldNumber();
+                            if (fn == LOCKUP_METADATA_TITLE_FIELD_NUMBER
+                                    || fn == LOCKUP_METADATA_CONTENT_FIELD_NUMBER) {
+                                if (child.isText()) {
+                                    addFilteredUserText(child.getText(), videoId, results, seen);
+                                } else if (child.children != null) {
+                                    collectReadableProtoTexts(child.children, videoId, results, seen);
+                                }
+                            }
+                        }
+                    }
+                    collectChannelHandlesRecursive(root, videoId, results, seen);
+                } else {
+                    // Comment threads, Shorts cells, or older layouts without LockupMetadataViewModel
+                    collectReadableProtoTexts(root, videoId, results, seen);
+                }
             } else {
                 collectFallbackUtf8Strings(buffer, videoId, results, seen);
             }
         }
 
-        if (accessibility != null && !accessibility.isEmpty()) {
+        // Only fall back to accessibility text if the buffer itself yielded no readable texts
+        // (e.g. a Shorts cell whose text is only in accessibility).
+        if (results.isEmpty() && accessibility != null && !accessibility.isEmpty()) {
             int pipeIndex = accessibility.indexOf('|');
             String a11yText = pipeIndex >= 0 ? accessibility.substring(pipeIndex + 1) : accessibility;
             addFilteredUserText(a11yText, videoId, results, seen);
@@ -690,18 +894,51 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         return results;
     }
 
+    private static void findNodesByFieldNumber(List<ProtoNode> nodes, int targetField, List<ProtoNode> out) {
+        for (int i = 0, size = nodes.size(); i < size; i++) {
+            ProtoNode node = nodes.get(i);
+            if (node.getFieldNumber() == targetField) {
+                out.add(node);
+            } else if (node.children != null && node.getFieldNumber() != INNERTUBE_COMMAND_FIELD_NUMBER) {
+                findNodesByFieldNumber(node.children, targetField, out);
+            }
+        }
+    }
+
+    private static void collectChannelHandlesRecursive(List<ProtoNode> nodes, @Nullable String videoId,
+                                                       List<String> out, Set<String> seen) {
+        for (int i = 0, size = nodes.size(); i < size; i++) {
+            ProtoNode node = nodes.get(i);
+            if (node.isText()) {
+                String t = node.getText().trim();
+                if (t.startsWith("/@") && t.length() > 2 && t.indexOf('/', 2) < 0) {
+                    addFilteredUserText(t.substring(1), videoId, out, seen);
+                }
+            } else if (node.children != null) {
+                collectChannelHandlesRecursive(node.children, videoId, out, seen);
+            }
+        }
+    }
+
     private static void collectReadableProtoTexts(List<ProtoNode> nodes, @Nullable String videoId,
                                                   List<String> out, Set<String> seen) {
         for (int i = 0, size = nodes.size(); i < size; i++) {
             ProtoNode node = nodes.get(i);
             final int fieldNumber = node.getFieldNumber();
 
-            // Skip InnertubeCommand (onTap / inlinePlayback / searchEndpoint / clickTrackingParams /
-            // serializedShareEntity), only extracting /@channelHandle from browseEndpoint if present.
+            // Skip commands and UI button models so button labels ("Действия", "Ответить", "Перевести")
+            // are never treated as video/comment content.
             if (fieldNumber == INNERTUBE_COMMAND_FIELD_NUMBER) {
                 if (node.children != null) {
                     collectChannelHandlesFromCommand(node.children, videoId, out, seen);
                 }
+                continue;
+            }
+            if (fieldNumber == BUTTON_VIEW_MODEL_FIELD_NUMBER
+                    || fieldNumber == TOGGLE_BUTTON_VIEW_MODEL_FIELD_NUMBER
+                    || fieldNumber == LIKE_BUTTON_VIEW_MODEL_FIELD_NUMBER
+                    || fieldNumber == ADD_TO_PLAYLIST_BUTTON_VIEW_MODEL_FIELD_NUMBER
+                    || fieldNumber == RENDERER_CONTEXT_FIELD_NUMBER) {
                 continue;
             }
 
@@ -740,7 +977,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
     private static void collectFallbackUtf8Strings(byte[] buffer, @Nullable String videoId,
                                                    List<String> out, Set<String> seen) {
-        // Fallback scanner if a buffer is not a root protobuf message: extract printable UTF-8 runs.
         int start = -1;
         for (int i = 0; i < buffer.length; i++) {
             byte b = buffer[i];
@@ -750,7 +986,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             } else {
                 if (start >= 0 && i - start >= 2) {
                     String candidate = new String(buffer, start, i - start, StandardCharsets.UTF_8);
-                    if ( candidate.indexOf('\uFFFD') < 0 ) {
+                    if (candidate.indexOf('\uFFFD') < 0) {
                         addFilteredUserText(candidate, videoId, out, seen);
                     }
                 }
@@ -805,7 +1041,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return null;
         }
 
-        // Convert channel URL path "/@handle" into "@handle".
         if (text.startsWith("/@") && text.length() > 2 && text.indexOf('/', 2) < 0 && !containsWhitespace(text)) {
             text = text.substring(1);
         }
@@ -818,11 +1053,10 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return null;
         }
 
-        if (!containsLetter(text)) {
+        if (!containsLetter(text) || isDurationOrBadgeText(text)) {
             return null;
         }
 
-        // Reject URLs, URI paths, domains, and media file extensions.
         if (text.startsWith("http://")
                 || text.startsWith("https://")
                 || text.startsWith("android-app://")
@@ -839,7 +1073,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return null;
         }
 
-        // Reject Litho template names, component identifiers, resource names, and codecs/fonts.
         if (text.contains(".eml")
                 || text.contains(".e|")
                 || IDENTIFIER_PATTERN.matcher(text).matches()
@@ -858,8 +1091,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return null;
         }
 
-        // Single-token strings (no spaces or line breaks) require extra checks to filter out
-        // Base64 entity keys, random IDs, and internal ASCII state keys.
         if (!containsWhitespace(text)) {
             if (text.charAt(0) == '@' || text.charAt(0) == '#') {
                 if (text.length() > 64
@@ -873,8 +1104,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             }
 
             if (isAllAscii(text)) {
-                // Technical ASCII keys with token punctuation (e.g. search_vwc_description_transition_key,
-                // g-high-recZ, comment-item-section, Base64 with =/+/%).
                 for (int i = 0, len = text.length(); i < len; i++) {
                     char c = text.charAt(i);
                     if (c == '_' || c == '.' || c == '/' || c == ':' || c == '='
@@ -883,13 +1112,10 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                     }
                 }
 
-                // ASCII strings mixing letters and digits without spaces (e.g. hq720, vp9, av1, 11-char IDs).
                 if (containsAsciiDigit(text)) {
                     return null;
                 }
 
-                // Long single-token ASCII strings (>= 12 chars) with camelCase / random Base64 casing
-                // or browse ID prefixes (FE..., VL..., PL...).
                 if ((text.startsWith("FE") || text.startsWith("VL") || text.startsWith("PL") || text.startsWith("RD"))
                         && text.length() > 4 && Character.isUpperCase(text.charAt(2))) {
                     return null;
@@ -974,12 +1200,13 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         return trimmed.equals("LIVE") || trimmed.equals("4K") || trimmed.equals("HD") || trimmed.equals("CC");
     }
 
-    // region Debug Mode hooks (Litho text span & ComponentHost dimming/overlay)
+    // region Debug Mode hooks (Inline word highlighting & ComponentHost dimming/overlay)
 
     /**
      * Injection point called by {@code hookLithoSpannableString(KEYWORD_FILTER)}.
-     * In Debug Mode, tags matched texts with {@link DebugRuleSpan} and prepends a visual
-     * {@code [🔍 rule]} indicator to the matched title or comment text.
+     * In Debug Mode, finds the exact character ranges of the matched word(s) inside {@code original}
+     * and highlights those exact words in bright red right inside the title, channel, or comment text
+     * (without prepending the raw regex string or pushing the title out of its 2-line container).
      */
     public static CharSequence onLithoTextLoaded(ContextInterface contextInterface, CharSequence original) {
         try {
@@ -995,7 +1222,8 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 return original;
             }
             filter.reparseIfNeeded();
-            if (filter.parsedRules.isEmpty()) {
+            List<KeywordRule> rules = filter.parsedRules;
+            if (rules.isEmpty()) {
                 return original;
             }
 
@@ -1003,47 +1231,64 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 return original;
             }
 
-            String cleaned = stripFormatCharacters(original);
+            String rawStr = original.toString();
+            String cleaned = stripFormatCharacters(rawStr);
             if (cleaned.length() < 2 || isDurationOrBadgeText(cleaned)) {
                 return original;
             }
 
-            boolean isPrimaryMatch = true;
-            String matchedRule = debugPrimaryTextToRule.get(cleaned);
-            if (matchedRule == null) {
-                for (KeywordRule rule : filter.parsedRules) {
-                    if (rule.matchesSingleText(cleaned)) {
-                        matchedRule = rule.displayRule;
-                        break;
+            // Check if this specific text was recorded as a matched clause or directly matches a rule.
+            MatchDetails recorded = debugMatchedTextMap.get(cleaned);
+            List<int[]> matchRanges = new ArrayList<>();
+            String matchedWord = null;
+            String matchedRuleDisplay = null;
+
+            for (int i = 0, size = rules.size(); i < size; i++) {
+                KeywordRule rule = rules.get(i);
+                boolean allowPartialAnd = recorded != null && recorded.ruleDisplay().equals(rule.displayRule);
+                List<int[]> ruleRanges = new ArrayList<>();
+                rule.collectMatchRangesInText(rawStr, allowPartialAnd, ruleRanges);
+                if (!ruleRanges.isEmpty()) {
+                    matchRanges.addAll(ruleRanges);
+                    if (matchedWord == null) {
+                        int[] first = ruleRanges.get(0);
+                        matchedWord = rawStr.substring(first[0], first[1]);
+                        matchedRuleDisplay = rule.displayRule;
                     }
+                    break;
                 }
             }
-            if (matchedRule == null) {
-                matchedRule = debugElementTextToRule.get(cleaned);
-                isPrimaryMatch = false;
-            }
 
-            if (matchedRule == null) {
+            if (matchRanges.isEmpty() || matchedWord == null || matchedRuleDisplay == null) {
                 return original;
             }
 
-            SpannableStringBuilder builder = new SpannableStringBuilder();
-            if (isPrimaryMatch) {
-                String badgePrefix = "[🔍 " + matchedRule + "] ";
-                builder.append(badgePrefix);
-                int prefixEnd = badgePrefix.length() - 1;
-                builder.setSpan(new BackgroundColorSpan(0xFFD32F2F), 0, prefixEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                builder.setSpan(new ForegroundColorSpan(0xFFFFFFFF), 0, prefixEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                builder.setSpan(new StyleSpan(Typeface.BOLD), 0, prefixEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                builder.setSpan(new RelativeSizeSpan(0.85f), 0, prefixEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            if (recorded == null) {
+                recordMatchLog(Source.HOME, matchedWord, cleaned, matchedRuleDisplay, null, true);
             }
 
-            int contentStart = builder.length();
-            builder.append(original);
-            builder.setSpan(new ForegroundColorSpan(0x88888888), contentStart, builder.length(),
+            SpannableStringBuilder builder = new SpannableStringBuilder(original);
+            // Dim the overall text slightly so the highlighted trigger word pops out clearly.
+            builder.setSpan(new ForegroundColorSpan(0x99AAAAAA), 0, builder.length(),
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            builder.setSpan(new DebugRuleSpan(matchedRule), 0, builder.length(),
-                    Spanned.SPAN_INCLUSIVE_INCLUSIVE);
+
+            // Highlight each matched word range inline in bright red with bold white text!
+            for (int i = 0, size = matchRanges.size(); i < size; i++) {
+                int[] range = matchRanges.get(i);
+                int start = Math.max(0, Math.min(range[0], builder.length()));
+                int end = Math.max(start, Math.min(range[1], builder.length()));
+                if (end > start) {
+                    builder.setSpan(new BackgroundColorSpan(0xFFD32F2F), start, end,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    builder.setSpan(new ForegroundColorSpan(0xFFFFFFFF), start, end,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    builder.setSpan(new StyleSpan(Typeface.BOLD), start, end,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+            }
+
+            builder.setSpan(new DebugRuleSpan(matchedWord, cleaned, matchedRuleDisplay),
+                    0, builder.length(), Spanned.SPAN_INCLUSIVE_INCLUSIVE);
             return new SpannableString(builder);
         } catch (Exception ex) {
             Logger.printException(() -> "KeywordContentFilter.onLithoTextLoaded failure", ex);
@@ -1060,6 +1305,13 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return false;
         }
         String path = pathBuilder.toString();
+        if (path.contains("overflow_button.e")
+                || path.contains("button.e")
+                || path.contains("badge.e")
+                || path.contains("avatar.e")
+                || path.contains("thumbnail.e")) {
+            return false;
+        }
         if (path.contains("comment_thread.eml") || path.contains("|comment.e")) {
             return Settings.HIDE_KEYWORD_CONTENT_COMMENTS.get();
         }
@@ -1089,8 +1341,8 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
     /**
      * Injection point called at the end of {@code com.facebook.litho.ComponentHost.onLayout}.
-     * When Debug Mode is enabled, dims matched video/comment cards and draws a crisp badge
-     * showing which rule triggered the match. Restores recycled hosts when unmatched.
+     * When Debug Mode is enabled, dims matched video/comment cards and draws a badge showing
+     * the exact word that triggered the match. Restores recycled hosts when unmatched.
      */
     public static void onComponentHostLayout(ComponentHost host) {
         if (host == null) {
@@ -1130,31 +1382,19 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 if (!root.isAttachedToWindow() || root.getParent() instanceof ComponentHost) {
                     continue;
                 }
-                // Do not apply a card-wide overlay to a horizontal shelf container that holds multiple videos.
                 if (hasHorizontalScrollingChild(root) || isHostInDialog(root)) {
                     detachDebugOverlay(root);
                     continue;
                 }
 
-                String matchedRule = findDebugRuleInViewTree(root);
-                if (matchedRule == null) {
-                    CharSequence contentDesc = root.getContentDescription();
-                    if (contentDesc != null && contentDesc.length() > 0) {
-                        String cleanedDesc = stripFormatCharacters(contentDesc);
-                        matchedRule = debugPrimaryTextToRule.get(cleanedDesc);
-                        if (matchedRule == null) {
-                            matchedRule = debugElementTextToRule.get(cleanedDesc);
-                        }
-                    }
-                }
-
-                if (matchedRule != null) {
+                DebugRuleSpan matchedSpan = findDebugSpanInViewTree(root);
+                if (matchedSpan != null) {
                     DebugCardOverlay overlay = debugOverlays.get(root);
                     if (overlay == null) {
                         overlay = new DebugCardOverlay(root);
                         debugOverlays.put(root, overlay);
                     }
-                    overlay.bind(root, matchedRule);
+                    overlay.bind(root, matchedSpan);
                 } else {
                     detachDebugOverlay(root);
                 }
@@ -1172,21 +1412,21 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     }
 
     @Nullable
-    private static String findDebugRuleInViewTree(View view) {
+    private static DebugRuleSpan findDebugSpanInViewTree(View view) {
         if (view instanceof ComponentHost host) {
             TextContent textContent = host.getTextContent();
             if (textContent != null) {
                 for (CharSequence item : textContent.getTextItems()) {
                     DebugRuleSpan span = getDebugRuleSpan(item);
                     if (span != null) {
-                        return span.rule;
+                        return span;
                     }
                 }
             }
         } else if (view instanceof TextView textView) {
             DebugRuleSpan span = getDebugRuleSpan(textView.getText());
             if (span != null) {
-                return span.rule;
+                return span;
             }
         }
 
@@ -1194,7 +1434,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             for (int i = 0, count = group.getChildCount(); i < count; i++) {
                 View child = group.getChildAt(i);
                 if (child.getVisibility() == View.VISIBLE && !isHorizontalScrollingView(child)) {
-                    String found = findDebugRuleInViewTree(child);
+                    DebugRuleSpan found = findDebugSpanInViewTree(child);
                     if (found != null) {
                         return found;
                     }
@@ -1254,9 +1494,8 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
     /**
      * Drawable attached to {@link ComponentHost#getOverlay()} in Debug Mode.
-     * Draws a semi-transparent background-colored scrim over the entire card (fading the
-     * thumbnail, avatar, and texts by ~66%) and renders a full-opacity pill badge at the
-     * top-left showing the exact rule that matched.
+     * Draws a semi-transparent background-colored scrim over the entire card and renders
+     * a full-opacity pill badge at the top-left showing the exact word that triggered the match.
      */
     private static final class DebugCardOverlay extends Drawable {
         private static final int BADGE_BG_COLOR = 0xE6C62828;
@@ -1271,7 +1510,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         private final RectF badgeRect = new RectF();
         private final float density;
 
-        private String ruleLabel = "";
+        private String badgeLabel = "";
         private boolean added;
 
         DebugCardOverlay(ComponentHost host) {
@@ -1290,8 +1529,12 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             textPaint.setTextSize(12.0f * density * fontScale);
         }
 
-        void bind(ComponentHost host, String matchedRule) {
-            ruleLabel = str("morphe_hide_keyword_debug_badge", matchedRule);
+        void bind(ComponentHost host, DebugRuleSpan span) {
+            String snippet = span.matchedText;
+            if (snippet.length() > 36) {
+                snippet = snippet.substring(0, 34) + "…";
+            }
+            badgeLabel = str("morphe_hide_keyword_debug_badge", "«" + span.matchedWord + "» (" + snippet + ")");
             setBounds(0, 0, host.getWidth(), host.getHeight());
             if (!added) {
                 host.getOverlay().add(this);
@@ -1312,20 +1555,17 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             Rect bounds = getBounds();
             if (bounds.isEmpty()) return;
 
-            // 1. Draw dimming scrim matched to the current app background color (66% opacity)
             int appBg = ThemeUtils.getAppBackgroundColor() & 0x00FFFFFF;
             scrimPaint.setColor(appBg | 0xA8000000);
             cardRect.set(bounds);
             canvas.drawRect(cardRect, scrimPaint);
 
-            // 2. Draw subtle accent border around the dimmed card
             float strokeInset = borderPaint.getStrokeWidth() / 2f;
             cardRect.inset(strokeInset, strokeInset);
             float cornerRadius = 8f * density;
             canvas.drawRoundRect(cardRect, cornerRadius, cornerRadius, borderPaint);
 
-            // 3. Draw crisp 100%-opaque rule pill badge at top-left
-            if (ruleLabel != null && !ruleLabel.isEmpty()) {
+            if (badgeLabel != null && !badgeLabel.isEmpty()) {
                 float margin = 8f * density;
                 float padH = 8f * density;
                 float padV = 4f * density;
@@ -1333,7 +1573,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 float maxTextWidth = maxBadgeWidth - 2f * padH;
 
                 CharSequence ellipsized = TextUtils.ellipsize(
-                        ruleLabel,
+                        badgeLabel,
                         new android.text.TextPaint(textPaint),
                         maxTextWidth,
                         TextUtils.TruncateAt.END
@@ -1377,9 +1617,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         Utils.showSnackbarLong(str("morphe_hide_keyword_toast_invalid_broad", matched));
     }
 
-    private void recordHide(StringFilterGroup matchedGroup, byte[] buffer,
-                            ContextInterface contextInterface, @Nullable String extractedVideoId) {
-        Source source = detectSource(matchedGroup, contextInterface);
+    private void recordHide(Source source, @Nullable String extractedVideoId) {
         String videoId = source == Source.COMMENTS
                 ? (VideoInformation.getVideoId().isEmpty() ? null : VideoInformation.getVideoId())
                 : extractedVideoId;
