@@ -118,6 +118,9 @@ public abstract class BufferPhraseFilter extends Filter {
             "related_video_with_context.e",
             // A/B test for subscribed video, and sometimes when tablet layout is enabled.
             "video_lockup_with_attachment.e",
+            // Modern card layout (lockup.eml) and grid video wrapper.
+            "lockup.e",
+            "grid_video_wrapper.e",
             "compact_video.e",
             "inline_shorts",
             "shorts_video_cell",
@@ -195,6 +198,34 @@ public abstract class BufferPhraseFilter extends Filter {
                                           ContextInterface contextInterface);
 
     /**
+     * Extended buffer match hook that also receives the Litho accessibility string and path.
+     * Subclasses that inspect structured text or accessibility labels can override this method;
+     * by default it delegates to {@link #matchBuffer(byte[], StringFilterGroup, ContextInterface)}.
+     */
+    @Nullable
+    protected String matchBuffer(byte[] buffer, String accessibility, CharSequence path,
+                                 StringFilterGroup matchedGroup, ContextInterface contextInterface) {
+        return matchBuffer(buffer, matchedGroup, contextInterface);
+    }
+
+    /**
+     * @return whether debug mode is enabled (when true, matched items are dimmed/highlighted
+     *         instead of hidden).
+     */
+    protected boolean isDebugModeEnabled() {
+        return false;
+    }
+
+    /**
+     * Optional hook invoked when a match occurs while {@link #isDebugModeEnabled()} is true.
+     */
+    protected void onDebugMatch(String matched, byte[] buffer, String accessibility,
+                                CharSequence path, StringFilterGroup matchedGroup,
+                                ContextInterface contextInterface) {
+        // Default no-op.
+    }
+
+    /**
      * Optional hook invoked when a hide is confirmed. Subclasses can override to record stats.
      */
     protected void onHideConfirmed(String matched) {
@@ -225,14 +256,20 @@ public abstract class BufferPhraseFilter extends Filter {
             return false; // Do not update statistics.
         }
 
-        String matched = matchBuffer(buffer, matchedGroup, contextInterface);
+        String matched = matchBuffer(buffer, accessibility, path, matchedGroup, contextInterface);
         if (matched != null) {
+            if (isDebugModeEnabled()) {
+                onDebugMatch(matched, buffer, accessibility, path, matchedGroup, contextInterface);
+                return false;
+            }
             updateStats(true, matched);
             onHideConfirmed(matched);
             return true;
         }
 
-        updateStats(false, null);
+        if (!isDebugModeEnabled()) {
+            updateStats(false, null);
+        }
         return false;
     }
 
@@ -355,21 +392,21 @@ public abstract class BufferPhraseFilter extends Filter {
      */
     public static boolean phrasesWillHideAllVideos(String[] phrases, boolean matchWholeWords) {
         for (String phrase : phrases) {
+            if (phrase == null || phrase.isEmpty()) continue;
             for (String commonString : STRINGS_IN_EVERY_BUFFER) {
                 if (matchWholeWords) {
-                    byte[] commonStringBytes = commonString.getBytes(StandardCharsets.UTF_8);
                     int matchIndex = 0;
                     while (true) {
                         matchIndex = commonString.indexOf(phrase, matchIndex);
                         if (matchIndex < 0) break;
 
-                        if (keywordMatchIsWholeWord(commonStringBytes, matchIndex, phrase.length())) {
+                        if (keywordMatchIsWholeWord(commonString, matchIndex, phrase.length())) {
                             return true;
                         }
 
                         matchIndex++;
                     }
-                } else if (Utils.containsAny(commonString, phrases)) {
+                } else if (commonString.contains(phrase)) {
                     return true;
                 }
             }
@@ -379,18 +416,55 @@ public abstract class BufferPhraseFilter extends Filter {
     }
 
     /**
-     * @return If the start and end indexes are not surrounded by other letters.
-     *         If the indexes are surrounded by numbers/symbols/punctuation it is considered a whole word.
+     * @return Whether the given Unicode code point is part of a word (letters, digits, underscores,
+     *         or combining marks), so short keywords like "ai" do not falsely match inside
+     *         alphanumeric IDs or tokens such as "2ai4" or "ai_key".
+     */
+    public static boolean isWordCodePoint(int codePoint) {
+        if (Character.isLetterOrDigit(codePoint) || codePoint == '_') {
+            return true;
+        }
+        final int type = Character.getType(codePoint);
+        return type == Character.NON_SPACING_MARK
+                || type == Character.COMBINING_SPACING_MARK
+                || type == Character.ENCLOSING_MARK;
+    }
+
+    /**
+     * @return If the start and end character indexes in {@code text} are not surrounded by other
+     *         word characters (letters, digits, or underscores).
+     */
+    public static boolean keywordMatchIsWholeWord(String text, int keywordStartCharIndex, int keywordCharLength) {
+        if (keywordStartCharIndex > 0) {
+            final int codePointBefore = Character.codePointBefore(text, keywordStartCharIndex);
+            if (isWordCodePoint(codePointBefore)) {
+                return false;
+            }
+        }
+
+        final int endIndex = keywordStartCharIndex + keywordCharLength;
+        if (endIndex < text.length()) {
+            final int codePointAfter = Character.codePointAt(text, endIndex);
+            if (isWordCodePoint(codePointAfter)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @return If the start and end byte indexes are not surrounded by other word characters.
      */
     public static boolean keywordMatchIsWholeWord(byte[] text, int keywordStartIndex, int keywordLength) {
         final Integer codePointBefore = getUtf8CodePointBefore(text, keywordStartIndex);
-        if (codePointBefore != null && Character.isLetter(codePointBefore)) {
+        if (codePointBefore != null && isWordCodePoint(codePointBefore)) {
             return false;
         }
 
         final Integer codePointAfter = getUtf8CodePointAt(text, keywordStartIndex + keywordLength);
         //noinspection RedundantIfStatement
-        if (codePointAfter != null && Character.isLetter(codePointAfter)) {
+        if (codePointAfter != null && isWordCodePoint(codePointAfter)) {
             return false;
         }
 
@@ -419,9 +493,11 @@ public abstract class BufferPhraseFilter extends Filter {
      */
     @Nullable
     public static Integer getUtf8CodePointAt(byte[] data, int index) {
-        int characterByteCount = 0;
-        final int dataLength = data.length;
-        while (index + characterByteCount < dataLength && ++characterByteCount <= UTF8_MAX_BYTE_COUNT) {
+        if (index < 0 || index >= data.length) {
+            return null;
+        }
+        final int maxBytes = Math.min(UTF8_MAX_BYTE_COUNT, data.length - index);
+        for (int characterByteCount = 1; characterByteCount <= maxBytes; characterByteCount++) {
             if (isValidUtf8(data, index, characterByteCount)) {
                 return decodeUtf8ToCodePoint(data, index, characterByteCount);
             }
@@ -431,6 +507,9 @@ public abstract class BufferPhraseFilter extends Filter {
     }
 
     public static boolean isValidUtf8(byte[] data, int startIndex, int numberOfBytes) {
+        if (startIndex < 0 || startIndex + numberOfBytes > data.length) {
+            return false;
+        }
         switch (numberOfBytes) {
             case 1 -> {
                 return (data[startIndex] & 0x80) == 0; // 0xxxxxxx (ASCII)
@@ -458,7 +537,7 @@ public abstract class BufferPhraseFilter extends Filter {
     public static int decodeUtf8ToCodePoint(byte[] data, int startIndex, int numberOfBytes) {
         switch (numberOfBytes) {
             case 1 -> {
-                return data[startIndex];
+                return data[startIndex] & 0x7F;
             }
             case 2 -> {
                 return ((data[startIndex] & 0x1F) << 6) |
@@ -496,6 +575,8 @@ public abstract class BufferPhraseFilter extends Filter {
     /** Byte sequence that precedes the video ID inside the buffer's thumbnail URL. */
     private static final byte[] THUMBNAIL_URL_PREFIX =
             "https://i.ytimg.com/vi/".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] THUMBNAIL_WEBP_URL_PREFIX =
+            "https://i.ytimg.com/vi_webp/".getBytes(StandardCharsets.US_ASCII);
 
     /**
      * @return the first video ID found in the buffer via the thumbnail URL prefix,
@@ -505,7 +586,15 @@ public abstract class BufferPhraseFilter extends Filter {
      */
     @Nullable
     public static String extractVideoIdFromBuffer(byte[] buffer) {
-        final byte[] prefix = THUMBNAIL_URL_PREFIX;
+        String id = extractVideoIdWithPrefix(buffer, THUMBNAIL_URL_PREFIX);
+        if (id != null) {
+            return id;
+        }
+        return extractVideoIdWithPrefix(buffer, THUMBNAIL_WEBP_URL_PREFIX);
+    }
+
+    @Nullable
+    private static String extractVideoIdWithPrefix(byte[] buffer, byte[] prefix) {
         final int prefixLen = prefix.length;
         outer:
         for (int i = 0, max = buffer.length - prefixLen - VIDEO_ID_LENGTH; i <= max; i++) {
