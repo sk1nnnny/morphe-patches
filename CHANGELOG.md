@@ -1,3 +1,9 @@
+## [1.0.3](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.2...v1.0.3) (2026-10-31)
+
+### 🐛 Bug Fixes
+
+* **youtube:** update keyword filter and debug mode ([aaaac0e](https://github.com/sk1nnnny/morphe-patches/commit/aaaac0eb1e0f52de0e1b1c56cf31f547c1d45854))
+
 ## [1.0.2](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.1...v1.0.2) (2026-10-31)
 
 ### 🐛 Bug Fixes
