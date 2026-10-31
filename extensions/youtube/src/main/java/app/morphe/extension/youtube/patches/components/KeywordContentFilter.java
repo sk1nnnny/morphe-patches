@@ -716,6 +716,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         super();
         instance = this;
         addPathCallbacks(commentsFilter, commentRepliesFilter);
+        VideoInformation.onVideoIdChange.addObserver(KeywordContentFilter::onVideoIdLoaded);
     }
 
     @Override

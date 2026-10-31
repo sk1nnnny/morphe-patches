@@ -584,7 +584,6 @@ val hideLayoutComponentsPatch = bytecodePatch(
 
         hookLithoSpannableString(COMMENTS_FILTER)
         hookLithoSpannableString(KEYWORD_FILTER)
-        hookVideoId("$KEYWORD_FILTER->onVideoIdLoaded")
 
         Fingerprint(
             definingClass = "Lcom/facebook/litho/ComponentHost;",
