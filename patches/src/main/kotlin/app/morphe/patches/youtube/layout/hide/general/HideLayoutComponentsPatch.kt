@@ -264,6 +264,10 @@ val hideLayoutComponentsPatch = bytecodePatch(
                     SwitchPreference("morphe_hide_keyword_content_home"),
                     SwitchPreference("morphe_hide_keyword_content_search"),
                     SwitchPreference("morphe_hide_keyword_content_subscriptions"),
+                    SwitchPreference("morphe_hide_keyword_content_use_and_operator", summary = true),
+                    SwitchPreference("morphe_hide_keyword_content_use_regex", summary = true),
+                    SwitchPreference("morphe_hide_keyword_content_case_sensitive", summary = true),
+                    SwitchPreference("morphe_hide_keyword_content_debug", summary = true),
                     TextPreference("morphe_hide_keyword_content_phrases", inputType = InputType.TEXT_MULTI_LINE),
                     PreferenceCategory(
                         key = "morphe_hide_keyword_content_stats_category",
@@ -282,6 +286,10 @@ val hideLayoutComponentsPatch = bytecodePatch(
                             ),
                             NonInteractivePreference(
                                 key = "morphe_hide_keyword_content_about_whole_words",
+                                tag = "app.morphe.extension.youtube.settings.preference.HTMLPreference"
+                            ),
+                            NonInteractivePreference(
+                                key = "morphe_hide_keyword_content_about_regex",
                                 tag = "app.morphe.extension.youtube.settings.preference.HTMLPreference"
                             )
                         )
@@ -564,9 +572,24 @@ val hideLayoutComponentsPatch = bytecodePatch(
 
         // endregion
 
-        // region hide comment preview
+        // region hide comment preview & keyword filter debug mode
 
         hookLithoSpannableString(COMMENTS_FILTER)
+        hookLithoSpannableString(KEYWORD_FILTER)
+
+        Fingerprint(
+            definingClass = "Lcom/facebook/litho/ComponentHost;",
+            name = "onLayout",
+            returnType = "V",
+            parameters = listOf("Z", "I", "I", "I", "I")
+        ).method.apply {
+            findInstructionIndicesReversedOrThrow(Opcode.RETURN_VOID).forEach { index ->
+                addInstruction(
+                    index,
+                    "invoke-static { p0 }, $KEYWORD_FILTER->onComponentHostLayout(Lcom/facebook/litho/ComponentHost;)V"
+                )
+            }
+        }
 
         // endregion
 
