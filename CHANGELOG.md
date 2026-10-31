@@ -1,3 +1,9 @@
+## [1.0.6](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.5...v1.0.6) (2026-10-31)
+
+### 🐛 Bug Fixes
+
+* **youtube:** inject subtitle matches into description protobuf via hookElement ([fe76efd](https://github.com/sk1nnnny/morphe-patches/commit/fe76efdb6ae4b405f5342322a97f7bf2a797113c))
+
 ## [1.0.5](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.4...v1.0.5) (2026-10-31)
 
 ### 🐛 Bug Fixes
