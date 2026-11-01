@@ -49,6 +49,7 @@ import app.morphe.patches.shared.misc.textcomponent.textComponentPatch
 import app.morphe.patches.youtube.ad.injectHideViewCall
 import app.morphe.patches.youtube.layout.hide.shelves.hideHorizontalShelvesPatch
 import app.morphe.patches.youtube.layout.hide.updatescreen.hideUpdateScreenPatch
+import app.morphe.patches.youtube.layout.stagecomments.channelVerificationAndStageCommentsPatch
 import app.morphe.patches.youtube.misc.engagement.engagementPanelHookPatch
 import app.morphe.patches.youtube.misc.litho.filter.lithoFilterPatch
 import app.morphe.patches.youtube.misc.litho.node.treeNodeElementHookPatch
@@ -129,7 +130,8 @@ val hideLayoutComponentsPatch = bytecodePatch(
         textComponentPatch,
         lithoSpannableStringPatch,
         lithoRelayoutPatch,
-        videoInformationPatch
+        videoInformationPatch,
+        channelVerificationAndStageCommentsPatch
     )
 
     compatibleWith(COMPATIBILITY_YOUTUBE)
@@ -426,6 +428,7 @@ val hideLayoutComponentsPatch = bytecodePatch(
         addLithoFilter(CUSTOM_FILTER)
         addSpanFilter(SANITIZE_VIDEO_SUBTITLE_FILTER)
         addSpanFilter(SEARCH_LINKS_FILTER)
+        addSpanFilter(KEYWORD_SUBTITLE_SPAN_FILTER)
         hookTreeNodeResult("$COMMENTS_FILTER->hideCommentsFilterBarOptions")
 
         // region hide mix playlists

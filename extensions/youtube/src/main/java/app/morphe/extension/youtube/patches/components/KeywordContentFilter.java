@@ -2957,6 +2957,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
      * and dims matched cards in Debug Mode.
      */
     public static void onComponentHostLayout(ComponentHost host) {
+        StageCommentsAndVerificationPatch.onComponentHostLayout(host);
         if (host == null) {
             return;
         }

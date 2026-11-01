@@ -271,6 +271,15 @@ public class Settings extends SharedYouTubeSettings {
     public static final LongSetting KEYWORD_HIDE_COUNT_COMMENTS = new LongSetting("morphe_keyword_hide_count_comments", 0L);
     public static final StringSetting KEYWORD_HIDES_24H = new StringSetting("morphe_keyword_hides_24h", "", false, false);
 
+    // Channel Verification & Stage Comments
+    public static final BooleanSetting STAGE_VERIFICATION_ENABLED = new BooleanSetting("morphe_stage_verification_enabled", TRUE);
+    public static final StringSetting STAGE_OWN_CHANNEL_HANDLES = new StringSetting("morphe_stage_own_channel_handles", "");
+    public static final StringSetting STAGE_OWN_CHANNEL_BADGE_TYPE = new StringSetting("morphe_stage_own_channel_badge_type", "CHECKMARK", false, false);
+    public static final StringSetting STAGE_VERIFIED_CHANNELS_LIST = new StringSetting("morphe_stage_verified_channels_list", "");
+    public static final BooleanSetting STAGE_COMMENTS_ENABLED = new BooleanSetting("morphe_stage_comments_enabled", TRUE);
+    public static final BooleanSetting STAGE_COMMENTS_LONG_PRESS_HINT = new BooleanSetting("morphe_stage_comments_long_press_hint", TRUE);
+    public static final StringSetting STAGE_COMMENTS_DATA_JSON = new StringSetting("morphe_stage_comments_data_json", "", false, false);
+
     // Player
     public static final BooleanSetting DISABLE_CHAPTER_SKIP_DOUBLE_TAP = new BooleanSetting("morphe_disable_chapter_skip_double_tap", FALSE);
     public static final BooleanSetting DISABLE_HAPTIC_FEEDBACK_CHAPTERS = new BooleanSetting("morphe_disable_haptic_feedback_chapters", FALSE);
