@@ -91,6 +91,7 @@ import app.morphe.extension.shared.Utils;
 import app.morphe.extension.shared.patches.LithoRelayoutPatch;
 import app.morphe.extension.shared.patches.components.ContextInterface;
 import app.morphe.extension.shared.patches.spans.SpanFilter;
+import app.morphe.extension.shared.patches.spans.SpanType;
 import app.morphe.extension.shared.patches.spans.StringSpanFilterGroup;
 import android.view.ViewTreeObserver;
 import app.morphe.extension.shared.ui.CustomDialog;
