@@ -1,3 +1,14 @@
+## [1.2.0](https://github.com/sk1nnnny/morphe-patches/compare/v1.1.0...v1.2.0) (2026-11-01)
+
+### 🐛 Bug Fixes
+
+* **youtube:** add missing SpanType import in StageCommentsAndVerificationPatch ([05c1253](https://github.com/sk1nnnny/morphe-patches/commit/05c12538737adbff478afe0bef524db88fe89617))
+* **youtube:** use standard ViewGroup and SpanFilter APIs in StageCommentsAndVerificationPatch ([98ffc43](https://github.com/sk1nnnny/morphe-patches/commit/98ffc4367d42b2da43d414e3abfe88fbcc8f7997))
+
+### ✨ New Features
+
+* **youtube:** add channel verification and stage comments patch ([f8bdd71](https://github.com/sk1nnnny/morphe-patches/commit/f8bdd7109905464cbe7a52ec54f18ddce34ef1ef))
+
 ## [1.1.0](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.6...v1.1.0) (2026-11-01)
 
 ### 🐛 Bug Fixes
