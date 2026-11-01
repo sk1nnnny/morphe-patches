@@ -1703,7 +1703,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
         ImageView iconView = new ImageView(context);
         iconView.setImageDrawable(new VectorSubtitlesIconDrawable(0xE6FFFFFF));
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(Dim.dp14, Dim.dp14);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(Dim.dp(14), Dim.dp(14));
         iconLp.gravity = Gravity.CENTER_VERTICAL;
         iconLp.setMarginEnd(Dim.dp(5));
         chip.addView(iconView, iconLp);
@@ -2228,7 +2228,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         // 4. Highlight matched keywords inside the quotes of the banner
         SubtitleScanState state = getActiveVideoSubtitleState();
         if (state != null && !state.items.isEmpty()) {
-            int highlightColor = ThemeUtils.isDarkModeEnabled() ? 0xFFFF8A80 : 0xFFD32F2F;
+            int highlightColor = ((ThemeUtils.getAppBackgroundColor() & 0x00FFFFFF) < 0x00808080) ? 0xFFFF8A80 : 0xFFD32F2F;
             String lowerBanner = bannerSlice.toLowerCase(Locale.ROOT);
             for (SubtitleMatchItem item : state.items) {
                 String lowerWord = item.matchedWord.toLowerCase(Locale.ROOT);
@@ -2355,7 +2355,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 return;
             }
 
-            boolean dark = ThemeUtils.isDarkModeEnabled();
+            boolean dark = ((ThemeUtils.getAppBackgroundColor() & 0x00FFFFFF) < 0x00808080);
             fillPaint.setColor(dark ? 0xFF233038 : 0xFFEAF1FB);
             strokePaint.setColor(dark ? 0x453EA6FF : 0x331A73E8);
             dividerPaint.setColor(dark ? 0x26FFFFFF : 0x1F000000);
@@ -2408,7 +2408,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
         SubtitleVectorIconSpan(int color) {
             this.drawable = new VectorSubtitlesIconDrawable(color);
-            this.iconSizePx = Dim.dp15;
+            this.iconSizePx = Dim.dp(15);
             this.widthPx = Dim.dp20;
         }
 
