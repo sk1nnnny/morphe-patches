@@ -314,8 +314,8 @@ Second \"item\" text"</string>
   <string name="morphe_hide_keyword_content_check_subtitles_title">Проверять субтитры видео по фильтру</string>
   <string name="morphe_hide_keyword_content_check_subtitles_summary">Ищет слова из фильтра в субтитрах открытого видео и нативно показывает найденные фрагменты с таймкодами в описании (без скрытия ролика)</string>
   <string name="morphe_hide_keyword_subtitles_inline">В субтитрах: %s</string>
-  <string name="morphe_hide_keyword_subtitles_header">В субтитрах:</string>
-  <string name="morphe_hide_keyword_debug_badge">🔍 Триггер: %s</string>
+  <string name="morphe_hide_keyword_subtitles_header">Совпадения в субтитрах</string>
+  <string name="morphe_hide_keyword_debug_badge">[Найдено: «%1$s» в %2$s]</string>
   <string name="morphe_hide_keyword_log_title">Журнал срабатываний фильтра</string>
   <string name="morphe_hide_keyword_log_summary">Записей: %s</string>
   <string name="morphe_hide_keyword_log_summary_empty">В этой сессии пока нет срабатываний</string>

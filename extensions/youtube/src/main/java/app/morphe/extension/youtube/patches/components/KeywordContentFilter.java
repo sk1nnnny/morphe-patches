@@ -24,28 +24,47 @@ package app.morphe.extension.youtube.patches.components;
 
 import static app.morphe.extension.shared.StringRef.str;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.text.Layout;
+import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
+import android.text.TextPaint;
+import android.text.TextUtils;
 import android.text.style.BackgroundColorSpan;
+import android.text.style.ClickableSpan;
 import android.text.style.ForegroundColorSpan;
+import android.text.style.LeadingMarginSpan;
+import android.text.style.LineBackgroundSpan;
+import android.text.style.LineHeightSpan;
+import android.text.style.ReplacementSpan;
 import android.text.style.StyleSpan;
 import android.util.Base64;
+import android.util.SparseArray;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
@@ -58,13 +77,18 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -80,6 +104,8 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 import app.morphe.extension.shared.Logger;
+import app.morphe.extension.shared.ResourceType;
+import app.morphe.extension.shared.ResourceUtils;
 import app.morphe.extension.shared.Utils;
 import app.morphe.extension.shared.innertube.utils.AuthUtils;
 import app.morphe.extension.shared.patches.components.BufferHideStatsTracker;
@@ -87,9 +113,13 @@ import app.morphe.extension.shared.patches.components.BufferPhraseFilter;
 import app.morphe.extension.shared.patches.components.ByteArrayFilterGroup;
 import app.morphe.extension.shared.patches.components.ContextInterface;
 import app.morphe.extension.shared.patches.components.StringFilterGroup;
+import app.morphe.extension.shared.patches.spans.SpanFilter;
+import app.morphe.extension.shared.patches.spans.SpanType;
+import app.morphe.extension.shared.patches.spans.StringSpanFilterGroup;
 import app.morphe.extension.shared.requests.Requester;
 import app.morphe.extension.shared.settings.LongSetting;
 import app.morphe.extension.shared.theme.ThemeUtils;
+import app.morphe.extension.shared.ui.Dim;
 import app.morphe.extension.youtube.patches.CaptionCookiesPatch;
 import app.morphe.extension.youtube.patches.VideoInformation;
 import app.morphe.extension.youtube.patches.utils.ProtoNode;
@@ -100,7 +130,9 @@ import app.morphe.extension.youtube.shared.PlayerType;
 /**
  * Allows hiding or dimming (in debug mode) home feed, subscriptions, search results, and comments
  * based on video title keywords, channel names/handles, or full regular expressions, and optionally
- * scans opened video subtitles to display matched phrases natively in the video description.
+ * scans opened video subtitles to display:
+ * 1) a native semi-transparent player overlay chip next to the chapter button, and
+ * 2) a standalone native card banner at the top of the video description with clickable timestamps.
  */
 @SuppressWarnings({"unused", "unchecked"})
 public final class KeywordContentFilter extends BufferPhraseFilter {
@@ -140,6 +172,10 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     private static final String DESCRIPTION_BODY_STATE_ID = "structured-description-body-state-id";
     private static final String DESCRIPTION_REDIRECT_PATH = "/redirect";
 
+    /** Invisible zero-width markers bounding the subtitle banner inside description text. */
+    private static final String SUBTITLE_BANNER_START_MARKER = "\u2060\u200B\u2060";
+    private static final String SUBTITLE_BANNER_END_MARKER = "\u2060\u200C\u2060";
+
     private static final ByteArrayFilterGroup descriptionElementBuffer = new ByteArrayFilterGroup(
             null,
             DESCRIPTION_IDENTIFIER,
@@ -165,6 +201,10 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     /** Short duration badge text such as 4:05 or 1:02:33. */
     private static final Pattern DURATION_BADGE_PATTERN =
             Pattern.compile("^(?:[^\\p{L}\\p{N}])?\\d{1,2}(?:[:.]\\d{2}){1,2}$");
+
+    /** Timestamp token pattern inside the subtitle banner, such as 18:47 or 1:02:33. */
+    private static final Pattern TIMESTAMP_TOKEN_PATTERN =
+            Pattern.compile("(?<!\\d)(?:\\d{1,2}:)?\\d{2}:\\d{2}(?!\\d)");
 
     /** Regex metacharacters that trigger regex compilation when the Regex setting is enabled. */
     private static final Pattern REGEX_META_PATTERN =
@@ -267,7 +307,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     @Nullable
     private static volatile KeywordContentFilter instance;
 
-    // region Comment Thread & Replies Decision Tracking (prevents orphaned "Show replies" buttons)
+    // region Comment Thread & Replies Decision Tracking
 
     private static final int MIN_COMMENT_ID_LENGTH = 24;
     private static final int MAX_IDS_PER_COMMENT = 40;
@@ -799,8 +839,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         final int rulesVer = currentRulesVersion;
         final boolean debug = isDebugModeEnabled();
 
-        // 1. Handle the "Show replies" ("Показать ответы") button of comments:
-        // Never scan the replies button's own text; only hide it if its parent comment_thread was hidden.
         if (matchedGroup == commentRepliesFilter) {
             if (debug || Utils.contains(path, COMMENT_THREAD_PATH)) {
                 return null;
@@ -808,8 +846,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return isCommentRepliesHidden(buffer, rulesVer, lastCommentDecision.get()) ? "" : null;
         }
 
-        // 2. Handle comment threads (comment_thread.eml):
-        // Only evaluate the outermost comment_thread.eml once; inner components reuse the decision.
         if (matchedGroup == commentsFilter) {
             CommentDecision last = lastCommentDecision.get();
             if (last != null && last.rulesVersion == rulesVer
@@ -836,7 +872,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return matchedWord;
         }
 
-        // 3. Standard feed / subscriptions / search video cards:
         String videoId = extractVideoIdFromBuffer(buffer);
         List<String> searchableTexts = extractSearchableTexts(buffer, accessibility, videoId);
         if (searchableTexts.isEmpty()) {
@@ -1041,11 +1076,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         }
     }
 
-    /**
-     * Checks whether {@code parent} is a {@code youtube.elements.AttributedString} message:
-     * has Field 1 (content), has Field 3 (style_runs) or Field 4/5 (command/attachment runs),
-     * has only small field numbers (<= 12), and has only a single Field 1.
-     */
     private static boolean isAttributedStringParent(@Nullable ProtoNode parent) {
         if (parent == null || parent.children == null || parent.children.size() < 2) {
             return false;
@@ -1078,7 +1108,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         }
         char first = decoded.charAt(0);
         if (first == '\n' || first == '\r' || first == '\t') {
-            return null; // Protobuf message starting with Field 1 tag (0x0A, 0x0D, 0x09).
+            return null;
         }
         if (decoded.indexOf('\n') <= 0 || decoded.indexOf('\r') >= 0 || decoded.indexOf('\t') >= 0) {
             return null;
@@ -1327,10 +1357,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         return text;
     }
 
-    /**
-     * Filters out ASCII wire/binary fragments and technical tokens that ProtoNode.decodeText
-     * can produce when all bytes of a sub-message fall within 0x20..0x7E.
-     */
     private static boolean looksLikeBinaryOrTechnicalAscii(String text) {
         final int len = text.length();
         if (!containsWhitespace(text)) {
@@ -1361,7 +1387,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return len == 11 && hasMultipleInternalUppercaseTransitions(text);
         }
 
-        // Multi-token ASCII string: check for wire/binary symbols or Base64 chunks
         int openParen = 0;
         int quotes = 0;
         for (int i = 0; i < len; i++) {
@@ -1441,7 +1466,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         return trimmed.equals("LIVE") || trimmed.equals("4K") || trimmed.equals("HD") || trimmed.equals("CC");
     }
 
-    // region Subtitle / Transcript Keyword Scanner (Native Description Element Injection)
+    // region Subtitle / Transcript Keyword Scanner, Player Overlay Chip & Native Description Banner
 
     private static final int SUBTITLE_CONNECT_TIMEOUT_MS = 8_000;
     private static final int SUBTITLE_READ_TIMEOUT_MS = 10_000;
@@ -1453,36 +1478,58 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     private static final Pattern SUBTITLE_BRACKETS_PATTERN = Pattern.compile("\\[[^]]*]");
     private static final Pattern SUBTITLE_PARENS_PATTERN = Pattern.compile("\\([^)]*\\)");
 
+    private static final String PLAYER_CHIP_TAG = "morphe_subtitle_overlay_chip";
+    private static final int ID_BOTTOM_UI_CONTAINER =
+            ResourceUtils.getIdentifier(ResourceType.ID, "youtube_controls_bottom_ui_container");
+
+    private static WeakReference<LinearLayout> playerOverlayChipRef = new WeakReference<>(null);
+    private static volatile String activeChipVideoId = "";
+    private static volatile int activeChipClickIndex = 0;
+
     public static final class SubtitleMatchItem {
         public final String matchedWord;
         public final String snippet;
         public final List<String> timestamps;
+        public final List<Long> timestampMsList;
         long lastTimestampMs;
 
         SubtitleMatchItem(String matchedWord, String snippet, String firstTimestamp, long firstMs) {
             this.matchedWord = matchedWord;
             this.snippet = snippet;
             this.timestamps = new ArrayList<>(MAX_TIMESTAMPS_PER_WORD);
+            this.timestampMsList = new ArrayList<>(MAX_TIMESTAMPS_PER_WORD);
             this.timestamps.add(firstTimestamp);
+            this.timestampMsList.add(firstMs);
             this.lastTimestampMs = firstMs;
         }
     }
+
+    private record ChipSeekPoint(String word, String timestamp, long timestampMs) {}
 
     private static final class SubtitleScanState {
         final CountDownLatch latch = new CountDownLatch(1);
         volatile boolean pending = true;
         volatile List<SubtitleMatchItem> items = Collections.emptyList();
+        volatile List<ChipSeekPoint> seekPoints = Collections.emptyList();
     }
 
     private static final Map<String, SubtitleScanState> subtitleScanCache =
             Collections.synchronizedMap(Utils.createSizeRestrictedMap(80, true));
 
     /**
-     * Called when a new video is loaded so subtitle scanning starts immediately in the background.
+     * Called when a new video is loaded so subtitle scanning starts immediately in the background
+     * and the player overlay chip resets.
      */
     public static void onVideoIdLoaded(@Nullable String videoId) {
         try {
-            if (videoId == null || videoId.isEmpty() || !Settings.HIDE_KEYWORD_CONTENT_CHECK_SUBTITLES.get()) {
+            if (videoId == null || videoId.isEmpty()) {
+                return;
+            }
+            activeChipVideoId = videoId;
+            activeChipClickIndex = 0;
+            Utils.runOnMainThread(KeywordContentFilter::updatePlayerOverlayChip);
+
+            if (!Settings.HIDE_KEYWORD_CONTENT_CHECK_SUBTITLES.get()) {
                 return;
             }
             KeywordContentFilter filter = instance;
@@ -1536,6 +1583,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                             String ts = formatTimestamp(line.startMs);
                             if (!existing.timestamps.contains(ts)) {
                                 existing.timestamps.add(ts);
+                                existing.timestampMsList.add(line.startMs);
                                 existing.lastTimestampMs = line.startMs;
                             }
                         }
@@ -1561,7 +1609,20 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 }
 
                 if (!byWordKey.isEmpty()) {
-                    state.items = Collections.unmodifiableList(new ArrayList<>(byWordKey.values()));
+                    List<SubtitleMatchItem> itemList = new ArrayList<>(byWordKey.values());
+                    List<ChipSeekPoint> points = new ArrayList<>();
+                    for (SubtitleMatchItem item : itemList) {
+                        for (int k = 0; k < item.timestamps.size(); k++) {
+                            points.add(new ChipSeekPoint(
+                                    item.matchedWord,
+                                    item.timestamps.get(k),
+                                    item.timestampMsList.get(k)
+                            ));
+                        }
+                    }
+                    points.sort((a, b) -> Long.compare(a.timestampMs(), b.timestampMs()));
+                    state.items = Collections.unmodifiableList(itemList);
+                    state.seekPoints = Collections.unmodifiableList(points);
                 }
             }
         } catch (Exception ex) {
@@ -1569,15 +1630,199 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         } finally {
             state.pending = false;
             state.latch.countDown();
+            Utils.runOnMainThread(KeywordContentFilter::updatePlayerOverlayChip);
         }
     }
 
     /**
+     * Called from {@link LayoutComponentsFilter#hideChaptersTimelineButton(View)} and
+     * {@link LayoutComponentsFilter#hideChapterTitle(View)} when the player time bar overlay views
+     * are initialized. Attaches the semi-transparent subtitle chip next to the chapter button.
+     */
+    public static void onPlayerTimeBarViewCreated(@Nullable View view) {
+        if (view == null) return;
+        try {
+            LinearLayout targetRow = findPlayerTimestampRow(view);
+            if (targetRow == null) return;
+
+            View existing = targetRow.findViewWithTag(PLAYER_CHIP_TAG);
+            if (existing instanceof LinearLayout existingChip) {
+                playerOverlayChipRef = new WeakReference<>(existingChip);
+                updatePlayerOverlayChip();
+                return;
+            }
+
+            LinearLayout chip = createPlayerSubtitleChip(targetRow.getContext());
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Dim.dp(26)
+            );
+            lp.gravity = Gravity.CENTER_VERTICAL;
+            lp.setMarginStart(Dim.dp6);
+            targetRow.addView(chip, lp);
+            playerOverlayChipRef = new WeakReference<>(chip);
+            updatePlayerOverlayChip();
+        } catch (Exception ex) {
+            Logger.printException(() -> "onPlayerTimeBarViewCreated failure", ex);
+        }
+    }
+
+    @Nullable
+    private static LinearLayout findPlayerTimestampRow(View view) {
+        LinearLayout bestHorizontalRow = null;
+        ViewParent p = view.getParent();
+        int depth = 0;
+        while (p instanceof ViewGroup vg && depth < 6) {
+            if (vg instanceof LinearLayout ll && ll.getOrientation() == LinearLayout.HORIZONTAL) {
+                bestHorizontalRow = ll;
+            }
+            if (ID_BOTTOM_UI_CONTAINER != 0 && vg.getId() == ID_BOTTOM_UI_CONTAINER) {
+                break;
+            }
+            p = vg.getParent();
+            depth++;
+        }
+        return bestHorizontalRow;
+    }
+
+    private static LinearLayout createPlayerSubtitleChip(Context context) {
+        LinearLayout chip = new LinearLayout(context);
+        chip.setTag(PLAYER_CHIP_TAG);
+        chip.setOrientation(LinearLayout.HORIZONTAL);
+        chip.setGravity(Gravity.CENTER_VERTICAL);
+        chip.setPadding(Dim.dp8, 0, Dim.dp6, 0);
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.RECTANGLE);
+        bg.setCornerRadius(Dim.dp(999));
+        bg.setColor(0x66000000);
+        chip.setBackground(bg);
+        chip.setClickable(true);
+        chip.setFocusable(true);
+        chip.setVisibility(View.GONE);
+
+        ImageView iconView = new ImageView(context);
+        iconView.setImageDrawable(new VectorSubtitlesIconDrawable(0xE6FFFFFF));
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(Dim.dp14, Dim.dp14);
+        iconLp.gravity = Gravity.CENTER_VERTICAL;
+        iconLp.setMarginEnd(Dim.dp(5));
+        chip.addView(iconView, iconLp);
+
+        TextView labelView = new TextView(context);
+        labelView.setTextColor(0xFFFFFFFF);
+        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        labelView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        labelView.setSingleLine(true);
+        labelView.setEllipsize(TextUtils.TruncateAt.END);
+        labelView.setMaxWidth(Dim.dp(175));
+        labelView.setIncludeFontPadding(false);
+        LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        labelLp.gravity = Gravity.CENTER_VERTICAL;
+        chip.addView(labelView, labelLp);
+
+        ImageView chevronView = new ImageView(context);
+        chevronView.setImageDrawable(new VectorChevronDrawable(0xCCFFFFFF));
+        LinearLayout.LayoutParams chevronLp = new LinearLayout.LayoutParams(Dim.dp10, Dim.dp10);
+        chevronLp.gravity = Gravity.CENTER_VERTICAL;
+        chevronLp.setMarginStart(Dim.dp(3));
+        chip.addView(chevronView, chevronLp);
+
+        chip.setOnClickListener(v -> onPlayerSubtitleChipClicked(chip));
+        return chip;
+    }
+
+    private static void onPlayerSubtitleChipClicked(LinearLayout chip) {
+        try {
+            SubtitleScanState state = getActiveVideoSubtitleState();
+            if (state == null || state.seekPoints.isEmpty()) {
+                return;
+            }
+            List<ChipSeekPoint> points = state.seekPoints;
+            int idx = activeChipClickIndex;
+            if (idx < 0 || idx >= points.size()) {
+                idx = 0;
+            }
+            ChipSeekPoint target = points.get(idx);
+            chip.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+            VideoInformation.seekTo(target.timestampMs());
+
+            if (points.size() > 1) {
+                activeChipClickIndex = (idx + 1) % points.size();
+                bindPlayerChipText(chip, points, activeChipClickIndex);
+            }
+        } catch (Exception ex) {
+            Logger.printException(() -> "onPlayerSubtitleChipClicked failure", ex);
+        }
+    }
+
+    private static void updatePlayerOverlayChip() {
+        try {
+            LinearLayout chip = playerOverlayChipRef.get();
+            if (chip == null) return;
+
+            if (!Settings.HIDE_KEYWORD_CONTENT_CHECK_SUBTITLES.get()) {
+                chip.setVisibility(View.GONE);
+                return;
+            }
+
+            SubtitleScanState state = getActiveVideoSubtitleState();
+            if (state == null || state.pending || state.seekPoints.isEmpty()) {
+                chip.setVisibility(View.GONE);
+                return;
+            }
+
+            List<ChipSeekPoint> points = state.seekPoints;
+            if (activeChipClickIndex < 0 || activeChipClickIndex >= points.size()) {
+                activeChipClickIndex = 0;
+            }
+            bindPlayerChipText(chip, points, activeChipClickIndex);
+            chip.setVisibility(View.VISIBLE);
+        } catch (Exception ex) {
+            Logger.printException(() -> "updatePlayerOverlayChip failure", ex);
+        }
+    }
+
+    private static void bindPlayerChipText(LinearLayout chip, List<ChipSeekPoint> points, int index) {
+        if (chip.getChildCount() < 2 || !(chip.getChildAt(1) instanceof TextView labelView)) {
+            return;
+        }
+        ChipSeekPoint pt = points.get(index);
+        String word = pt.word();
+        if (word.length() > 16) {
+            word = word.substring(0, 15) + "…";
+        }
+        String text = word + " (" + pt.timestamp() + ")";
+        if (points.size() > 1) {
+            text += " · " + (index + 1) + "/" + points.size();
+        }
+        labelView.setText(text);
+    }
+
+    @Nullable
+    private static SubtitleScanState getActiveVideoSubtitleState() {
+        KeywordContentFilter filter = instance;
+        if (filter == null) return null;
+        String videoId = VideoInformation.getStartingOrPlayingVideoId();
+        if (videoId.isEmpty()) {
+            videoId = VideoInformation.getVideoId();
+        }
+        if (videoId.isEmpty()) {
+            videoId = activeChipVideoId;
+        }
+        if (videoId == null || videoId.isEmpty()) {
+            return null;
+        }
+        return subtitleScanCache.get(videoId + "|" + filter.currentRulesVersion);
+    }
+
+    /**
      * Injection point called by {@code hookElement("$KEYWORD_FILTER->onDescriptionElementLoaded")}.
-     * Modifies {@code description_rich_text_list.eml} and {@code cell_description_body.eml} directly
-     * at the protobuf level (using the same segment & run-shifting architecture as OriginalDescription)
-     * so descriptions with links, social chips (Twitch/VK/Telegram), and embedded video link cards
-     * all display subtitle matches cleanly without ever touching embedded video card titles.
+     * Prepends the bounded subtitle banner text to the first text segment of
+     * {@code description_rich_text_list.eml} or {@code cell_description_body.eml} and shifts
+     * all protobuf runs so original links and social icons remain aligned.
      */
     public static byte[] onDescriptionElementLoaded(byte[] bytes) {
         try {
@@ -1648,20 +1893,27 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
             String headerTitle = str("morphe_hide_keyword_subtitles_header");
             StringBuilder block = new StringBuilder();
-            block.append(headerTitle).append('\n');
+            block.append(SUBTITLE_BANNER_START_MARKER)
+                    .append("\u00A0 ")
+                    .append(headerTitle)
+                    .append('\n');
             for (int i = 0, size = items.size(); i < size; i++) {
                 SubtitleMatchItem item = items.get(i);
                 block.append(String.join(", ", item.timestamps))
                         .append(" — «")
                         .append(item.snippet)
-                        .append("»\n");
+                        .append("»");
+                if (i == size - 1) {
+                    block.append(SUBTITLE_BANNER_END_MARKER);
+                }
+                block.append('\n');
             }
             block.append('\n');
             String prefix = block.toString();
 
             boolean modified = isShortsDescription
-                    ? prependToShortsDescription(root, prefix, headerTitle)
-                    : prependToVideoDescription(root, prefix, headerTitle);
+                    ? prependToShortsDescription(root, prefix)
+                    : prependToVideoDescription(root, prefix);
 
             return modified ? ProtoNode.write(root) : bytes;
         } catch (Exception ex) {
@@ -1706,7 +1958,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         return null;
     }
 
-    private static boolean prependToVideoDescription(List<ProtoNode> root, String prefix, String headerTitle) {
+    private static boolean prependToVideoDescription(List<ProtoNode> root, String prefix) {
         List<ProtoNode> segments = findDescriptionBodySegments(root);
         if (segments == null) {
             return false;
@@ -1718,7 +1970,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                     ? null
                     : ProtoNode.field(segmentText.children, TEXT_CONTENT_FIELD_NUMBER);
             if (content != null && content.decodeText() != null && !content.decodeText().isEmpty()) {
-                return prependTextAndShiftRuns(segmentText.children, content, prefix, headerTitle);
+                return prependTextAndShiftRuns(segmentText.children, content, prefix);
             }
         }
         return false;
@@ -1761,7 +2013,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         return null;
     }
 
-    private static boolean prependToShortsDescription(List<ProtoNode> root, String prefix, String headerTitle) {
+    private static boolean prependToShortsDescription(List<ProtoNode> root, String prefix) {
         ProtoNode content = findShortsDescriptionContent(root, null);
         if (content == null) {
             return false;
@@ -1769,10 +2021,10 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         ProtoNode parent = content.getParent();
         if (parent != null && parent.children != null
                 && ProtoNode.field(parent.children, TEXT_CONTENT_FIELD_NUMBER) == content) {
-            return prependTextAndShiftRuns(parent.children, content, prefix, headerTitle);
+            return prependTextAndShiftRuns(parent.children, content, prefix);
         }
         String originalText = content.decodeUtf8();
-        if (originalText.startsWith(headerTitle)) {
+        if (originalText.contains(SUBTITLE_BANNER_START_MARKER)) {
             return false;
         }
         content.setText(prefix + originalText);
@@ -1800,15 +2052,11 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         return best;
     }
 
-    /**
-     * Prepends {@code prefix} to {@code content} inside an {@code AttributedString} message
-     * ({@code textFields}) and shifts all link, icon, and partial style runs by {@code prefix.length()},
-     * while extending full-text style runs so the prepended block inherits the native description style.
-     */
     private static boolean prependTextAndShiftRuns(List<ProtoNode> textFields, ProtoNode content,
-                                                   String prefix, String headerTitle) {
+                                                   String prefix) {
         String originalText = content.decodeUtf8();
-        if (originalText == null || originalText.isEmpty() || originalText.startsWith(headerTitle)) {
+        if (originalText == null || originalText.isEmpty()
+                || originalText.contains(SUBTITLE_BANNER_START_MARKER)) {
             return false;
         }
         final int originalLength = originalText.length();
@@ -1838,12 +2086,10 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             }
         }
 
-        // Run starts at index 0 (so RANGE_START_FIELD = 1 was omitted on the wire in proto3)
         ProtoNode lengthNode = ProtoNode.field(runFields, RANGE_LENGTH_FIELD_NUMBER);
         if (lengthNode != null && lengthNode.getVarint() != null) {
             long len = lengthNode.getVarint();
             if (isStyleRun && len >= originalLength) {
-                // Full-text base StyleRun: extend length to cover prefix + originalText
                 lengthNode.setVarint(len + prefixLength);
             } else if (len > 0 && len <= originalLength) {
                 ProtoNode newStart = createVarintNode(RANGE_START_FIELD_NUMBER, prefixLength);
@@ -1884,6 +2130,401 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         ProtoNode node = parsed.get(0);
         node.setVarint(value);
         return node;
+    }
+
+    /**
+     * SpanFilter registered via {@code addSpanFilter} in HideLayoutComponentsPatch.kt.
+     * Decorates the subtitle banner inside description SpannableStrings with the native card
+     * container, vector subtitles icon, clickable blue timestamps, and highlighted trigger words.
+     */
+    public static final class SubtitleSpanFilter extends SpanFilter {
+        public SubtitleSpanFilter() {
+            addCallbacks(
+                    new StringSpanFilterGroup(
+                            Settings.HIDE_KEYWORD_CONTENT_CHECK_SUBTITLES,
+                            "description_rich_text_list.e",
+                            "cell_description_body.e",
+                            "expandable_metadata.e",
+                            "structured_description"
+                    )
+            );
+        }
+
+        @Override
+        public boolean skip(String identifier, CharSequence path, SpannableString spannableString,
+                            Object span, int start, int end, int flags, boolean isWord,
+                            SpanType spanType, StringSpanFilterGroup matchedGroup) {
+            if (spannableString.toString().contains(SUBTITLE_BANNER_START_MARKER)) {
+                spannableString.setSpan(span, start, end, flags);
+                decorateSubtitleBannerSpans(spannableString);
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Attaches the card background span, vector icon span, clickable timestamp spans, and
+     * keyword highlight spans to any {@link Spannable} containing {@link #SUBTITLE_BANNER_START_MARKER}.
+     */
+    private static void decorateSubtitleBannerSpans(Spannable spannable) {
+        String text = spannable.toString();
+        int startIdx = text.indexOf(SUBTITLE_BANNER_START_MARKER);
+        if (startIdx < 0) {
+            return;
+        }
+        int endMarkerIdx = text.indexOf(SUBTITLE_BANNER_END_MARKER, startIdx);
+        if (endMarkerIdx <= startIdx) {
+            return;
+        }
+        final int bannerEnd = endMarkerIdx + SUBTITLE_BANNER_END_MARKER.length();
+
+        // Remove any previous banner spans before re-applying at the top of the span stack
+        SubtitleBannerCardSpan[] oldCards = spannable.getSpans(startIdx, bannerEnd, SubtitleBannerCardSpan.class);
+        for (SubtitleBannerCardSpan old : oldCards) {
+            spannable.removeSpan(old);
+        }
+        SubtitleVectorIconSpan[] oldIcons = spannable.getSpans(startIdx, bannerEnd, SubtitleVectorIconSpan.class);
+        for (SubtitleVectorIconSpan old : oldIcons) {
+            spannable.removeSpan(old);
+        }
+        SubtitleTimestampClickableSpan[] oldClicks = spannable.getSpans(startIdx, bannerEnd, SubtitleTimestampClickableSpan.class);
+        for (SubtitleTimestampClickableSpan old : oldClicks) {
+            spannable.removeSpan(old);
+        }
+
+        // 1. Card background, border, left accent strip, and internal padding
+        SubtitleBannerCardSpan cardSpan = new SubtitleBannerCardSpan(startIdx, bannerEnd);
+        spannable.setSpan(cardSpan, startIdx, bannerEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+
+        // 2. Vector Subtitles icon before the header title
+        int iconStart = startIdx + SUBTITLE_BANNER_START_MARKER.length();
+        int firstNewline = text.indexOf('\n', iconStart);
+        if (firstNewline > iconStart + 2) {
+            spannable.setSpan(new SubtitleVectorIconSpan(0xFF3EA6FF),
+                    iconStart, iconStart + 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            spannable.setSpan(new StyleSpan(Typeface.BOLD),
+                    iconStart + 2, firstNewline, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+
+        // 3. Clickable blue timestamps (18:47) inside the banner
+        String bannerSlice = text.substring(startIdx, bannerEnd);
+        Matcher tsMatcher = TIMESTAMP_TOKEN_PATTERN.matcher(bannerSlice);
+        while (tsMatcher.find()) {
+            String tsStr = tsMatcher.group();
+            long seekMs = parseTimestampToMs(tsStr);
+            if (seekMs >= 0) {
+                int tsAbsStart = startIdx + tsMatcher.start();
+                int tsAbsEnd = startIdx + tsMatcher.end();
+                spannable.setSpan(new SubtitleTimestampClickableSpan(seekMs),
+                        tsAbsStart, tsAbsEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                spannable.setSpan(new ForegroundColorSpan(0xFF3EA6FF),
+                        tsAbsStart, tsAbsEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                spannable.setSpan(new StyleSpan(Typeface.BOLD),
+                        tsAbsStart, tsAbsEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+        }
+
+        // 4. Highlight matched keywords inside the quotes of the banner
+        SubtitleScanState state = getActiveVideoSubtitleState();
+        if (state != null && !state.items.isEmpty()) {
+            int highlightColor = ThemeUtils.isDarkModeEnabled() ? 0xFFFF8A80 : 0xFFD32F2F;
+            String lowerBanner = bannerSlice.toLowerCase(Locale.ROOT);
+            for (SubtitleMatchItem item : state.items) {
+                String lowerWord = item.matchedWord.toLowerCase(Locale.ROOT);
+                if (lowerWord.isEmpty()) continue;
+                int searchFrom = firstNewline > startIdx ? (firstNewline - startIdx) : 0;
+                while (searchFrom < lowerBanner.length()) {
+                    int wIdx = lowerBanner.indexOf(lowerWord, searchFrom);
+                    if (wIdx < 0) break;
+                    int wAbsStart = startIdx + wIdx;
+                    int wAbsEnd = wAbsStart + item.matchedWord.length();
+                    if (wAbsEnd <= bannerEnd) {
+                        spannable.setSpan(new ForegroundColorSpan(highlightColor),
+                                wAbsStart, wAbsEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                        spannable.setSpan(new StyleSpan(Typeface.BOLD),
+                                wAbsStart, wAbsEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    }
+                    searchFrom = wIdx + Math.max(1, lowerWord.length());
+                }
+            }
+        }
+    }
+
+    private static long parseTimestampToMs(String ts) {
+        try {
+            String[] parts = ts.split(":");
+            if (parts.length == 2) {
+                long m = Long.parseLong(parts[0]);
+                long s = Long.parseLong(parts[1]);
+                return (m * 60L + s) * 1000L;
+            } else if (parts.length == 3) {
+                long h = Long.parseLong(parts[0]);
+                long m = Long.parseLong(parts[1]);
+                long s = Long.parseLong(parts[2]);
+                return (h * 3600L + m * 60L + s) * 1000L;
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        return -1L;
+    }
+
+    /**
+     * ClickableSpan for subtitle timestamps inside the description card.
+     * Seeks the player immediately to {@link #timestampMs} when tapped.
+     */
+    public static final class SubtitleTimestampClickableSpan extends ClickableSpan {
+        final long timestampMs;
+
+        SubtitleTimestampClickableSpan(long timestampMs) {
+            this.timestampMs = timestampMs;
+        }
+
+        @Override
+        public void onClick(@NonNull View widget) {
+            try {
+                widget.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                VideoInformation.seekTo(timestampMs);
+            } catch (Exception ex) {
+                Logger.printException(() -> "SubtitleTimestampClickableSpan.onClick failure", ex);
+            }
+        }
+
+        @Override
+        public void updateDrawState(@NonNull TextPaint ds) {
+            ds.setColor(0xFF3EA6FF);
+            ds.setUnderlineText(false);
+            ds.setFakeBoldText(true);
+        }
+    }
+
+    /**
+     * Draws a standalone rounded Material You Card / Banner around the subtitle matches section
+     * inside the description, with a left accent bar and header divider.
+     */
+    private static final class SubtitleBannerCardSpan implements LineBackgroundSpan, LeadingMarginSpan, LineHeightSpan {
+        private final int bannerStart;
+        private final int bannerEnd;
+        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint accentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint dividerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path cardPath = new Path();
+        private final RectF rectF = new RectF();
+
+        SubtitleBannerCardSpan(int bannerStart, int bannerEnd) {
+            this.bannerStart = bannerStart;
+            this.bannerEnd = bannerEnd;
+            strokePaint.setStyle(Paint.Style.STROKE);
+            strokePaint.setStrokeWidth(Dim.dp1);
+            accentPaint.setStyle(Paint.Style.FILL);
+            accentPaint.setColor(0xFF3EA6FF);
+            dividerPaint.setStyle(Paint.Style.STROKE);
+            dividerPaint.setStrokeWidth(1f);
+        }
+
+        @Override
+        public int getLeadingMargin(boolean first) {
+            return Dim.dp12;
+        }
+
+        @Override
+        public void drawLeadingMargin(Canvas c, Paint p, int x, int dir, int top, int baseline,
+                                      int bottom, CharSequence text, int start, int end,
+                                      boolean first, Layout layout) {
+        }
+
+        @Override
+        public void chooseHeight(CharSequence text, int start, int end, int spanstartv,
+                                 int lineHeight, Paint.FontMetricsInt fm) {
+            if (start <= bannerStart) {
+                fm.ascent -= Dim.dp6;
+                fm.top -= Dim.dp6;
+            }
+            if (end >= bannerEnd) {
+                fm.descent += Dim.dp6;
+                fm.bottom += Dim.dp6;
+            }
+        }
+
+        @Override
+        public void drawBackground(@NonNull Canvas canvas, @NonNull Paint paint,
+                                   int left, int right, int top, int baseline, int bottom,
+                                   @NonNull CharSequence text, int start, int end, int lineNumber) {
+            if (end <= bannerStart || start >= bannerEnd) {
+                return;
+            }
+
+            boolean dark = ThemeUtils.isDarkModeEnabled();
+            fillPaint.setColor(dark ? 0xFF233038 : 0xFFEAF1FB);
+            strokePaint.setColor(dark ? 0x453EA6FF : 0x331A73E8);
+            dividerPaint.setColor(dark ? 0x26FFFFFF : 0x1F000000);
+
+            boolean isFirstLine = start <= bannerStart;
+            boolean isLastLine = end >= bannerEnd;
+
+            float r = Dim.dp10;
+            float inset = Dim.dp1;
+            float topY = isFirstLine ? top + inset : top;
+            float bottomY = isLastLine ? bottom - inset : bottom;
+            rectF.set(left + inset, topY, right - inset, bottomY);
+
+            float[] radii;
+            if (isFirstLine && isLastLine) {
+                radii = new float[]{r, r, r, r, r, r, r, r};
+            } else if (isFirstLine) {
+                radii = new float[]{r, r, r, r, 0f, 0f, 0f, 0f};
+            } else if (isLastLine) {
+                radii = new float[]{0f, 0f, 0f, 0f, r, r, r, r};
+            } else {
+                radii = new float[]{0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f};
+            }
+
+            cardPath.reset();
+            cardPath.addRoundRect(rectF, radii, Path.Direction.CW);
+            canvas.drawPath(cardPath, fillPaint);
+
+            // Left vertical accent strip
+            canvas.save();
+            canvas.clipPath(cardPath);
+            canvas.drawRect(left + inset, topY, left + inset + Dim.dp(3.5f), bottomY, accentPaint);
+            canvas.restore();
+
+            canvas.drawPath(cardPath, strokePaint);
+
+            if (isFirstLine && !isLastLine) {
+                canvas.drawLine(left + Dim.dp12, bottom - 0.5f, right - Dim.dp10, bottom - 0.5f, dividerPaint);
+            }
+        }
+    }
+
+    /**
+     * ReplacementSpan that draws a crisp vector Subtitles / Closed-Caption icon inline (zero emojis).
+     */
+    private static final class SubtitleVectorIconSpan extends ReplacementSpan {
+        private final VectorSubtitlesIconDrawable drawable;
+        private final int widthPx;
+        private final int iconSizePx;
+
+        SubtitleVectorIconSpan(int color) {
+            this.drawable = new VectorSubtitlesIconDrawable(color);
+            this.iconSizePx = Dim.dp15;
+            this.widthPx = Dim.dp20;
+        }
+
+        @Override
+        public int getSize(@NonNull Paint paint, CharSequence text, int start, int end,
+                           @Nullable Paint.FontMetricsInt fm) {
+            return widthPx;
+        }
+
+        @Override
+        public void draw(@NonNull Canvas canvas, CharSequence text, int start, int end,
+                         float x, int top, int y, int bottom, @NonNull Paint paint) {
+            Paint.FontMetricsInt fm = paint.getFontMetricsInt();
+            int centerY = y + (fm.ascent + fm.descent) / 2;
+            int iconTop = centerY - iconSizePx / 2;
+            int iconLeft = Math.round(x);
+            drawable.setBounds(iconLeft, iconTop, iconLeft + iconSizePx, iconTop + iconSizePx);
+            drawable.draw(canvas);
+        }
+    }
+
+    /**
+     * Vector drawable of a Subtitles / Closed-Caption icon (rounded frame + two caption bars).
+     */
+    private static final class VectorSubtitlesIconDrawable extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF boxRect = new RectF();
+
+        VectorSubtitlesIconDrawable(int color) {
+            paint.setColor(color);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+        }
+
+        @Override
+        public void draw(@NonNull Canvas canvas) {
+            Rect b = getBounds();
+            if (b.isEmpty()) return;
+            float w = b.width();
+            float h = b.height();
+            float stroke = Math.max(1.5f, w * 0.11f);
+            paint.setStrokeWidth(stroke);
+
+            // Outer rounded caption box
+            paint.setStyle(Paint.Style.STROKE);
+            float vInset = h * 0.12f;
+            float hInset = w * 0.06f;
+            boxRect.set(b.left + hInset, b.top + vInset, b.right - hInset, b.bottom - vInset);
+            float corner = w * 0.18f;
+            canvas.drawRoundRect(boxRect, corner, corner, paint);
+
+            // Two horizontal subtitle lines inside the box
+            float line1Y = b.top + h * 0.43f;
+            float line2Y = b.top + h * 0.63f;
+            canvas.drawLine(b.left + w * 0.24f, line1Y, b.left + w * 0.76f, line1Y, paint);
+            canvas.drawLine(b.left + w * 0.24f, line2Y, b.left + w * 0.58f, line2Y, paint);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+        }
+
+        @Override
+        public void setColorFilter(@Nullable ColorFilter colorFilter) {
+            paint.setColorFilter(colorFilter);
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
+        }
+    }
+
+    /**
+     * Vector drawable of a right-pointing chevron ('>') matching YouTube's player overlay chip.
+     */
+    private static final class VectorChevronDrawable extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path path = new Path();
+
+        VectorChevronDrawable(int color) {
+            paint.setColor(color);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+        }
+
+        @Override
+        public void draw(@NonNull Canvas canvas) {
+            Rect b = getBounds();
+            if (b.isEmpty()) return;
+            float w = b.width();
+            float h = b.height();
+            paint.setStrokeWidth(Math.max(1.5f, w * 0.16f));
+
+            path.reset();
+            path.moveTo(b.left + w * 0.30f, b.top + h * 0.20f);
+            path.lineTo(b.left + w * 0.68f, b.top + h * 0.50f);
+            path.lineTo(b.left + w * 0.30f, b.top + h * 0.80f);
+            canvas.drawPath(path, paint);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+        }
+
+        @Override
+        public void setColorFilter(@Nullable ColorFilter colorFilter) {
+            paint.setColorFilter(colorFilter);
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
+        }
     }
 
     @Nullable
@@ -2131,8 +2772,8 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             String text = sb.toString()
                     .replace('\n', ' ')
                     .replace(">>", "")
-                    .replace("♪", "")
-                    .replace("♫", "")
+                    .replace("\u266A", "")
+                    .replace("\u266B", "")
                     .trim();
             text = SUBTITLE_BRACKETS_PATTERN.matcher(text).replaceAll("");
             text = SUBTITLE_PARENS_PATTERN.matcher(text).replaceAll("");
@@ -2148,12 +2789,13 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
     // endregion
 
-    // region Debug Mode hooks (Inline word highlighting & ComponentHost dimming)
+    // region Debug Mode & Description Banner Touch Hooks
+
+    private static final Map<ComponentHost, Boolean> touchHookedBannerHosts =
+            Collections.synchronizedMap(new WeakHashMap<>());
 
     /**
      * Injection point called by {@code hookLithoSpannableString(KEYWORD_FILTER)}.
-     * Triggers background subtitle scanning when the watch page metadata row loads,
-     * and highlights matched trigger words inline in Debug Mode.
      */
     public static CharSequence onLithoTextLoaded(ContextInterface contextInterface, CharSequence original) {
         try {
@@ -2167,7 +2809,16 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             }
             filter.reparseIfNeeded();
 
-            // When the watch page metadata row loads, ensure the background subtitle scan has started
+            // 1. If this text contains the subtitle banner markers, decorate it with the card & clickable spans
+            if (original.toString().contains(SUBTITLE_BANNER_START_MARKER)) {
+                SpannableString spanned = original instanceof SpannableString ss
+                        ? ss
+                        : new SpannableString(original);
+                decorateSubtitleBannerSpans(spanned);
+                return spanned;
+            }
+
+            // 2. When the watch page metadata row loads, ensure background subtitle scanning has started
             if (Settings.HIDE_KEYWORD_CONTENT_CHECK_SUBTITLES.get() && contextInterface != null) {
                 StringBuilder pb = contextInterface.patch_getPathBuilder();
                 if (pb != null && pb.indexOf("|video_subtitle.") >= 0) {
@@ -2179,7 +2830,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 }
             }
 
-            // Debug Mode inline word highlighting
+            // 3. Debug Mode inline word highlighting
             if (!Settings.HIDE_KEYWORD_CONTENT_DEBUG.get()) {
                 return original;
             }
@@ -2302,16 +2953,20 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
     /**
      * Injection point called at the end of {@code com.facebook.litho.ComponentHost.onLayout}.
-     * When Debug Mode is enabled, dims matched video/comment cards. Restores recycled hosts when unmatched.
+     * Ensures subtitle banner spans & timestamp touch handling are active on description hosts,
+     * and dims matched cards in Debug Mode.
      */
     public static void onComponentHostLayout(ComponentHost host) {
         if (host == null) {
             return;
         }
-        if (!Settings.HIDE_KEYWORD_CONTENT_DEBUG.get() && debugOverlays.isEmpty()) {
-            return;
-        }
         try {
+            if (Settings.HIDE_KEYWORD_CONTENT_CHECK_SUBTITLES.get()) {
+                attachBannerTouchHandlerIfNeeded(host);
+            }
+            if (!Settings.HIDE_KEYWORD_CONTENT_DEBUG.get() && debugOverlays.isEmpty()) {
+                return;
+            }
             ComponentHost root = findRootHost(host);
             if (root == null) {
                 return;
@@ -2323,6 +2978,176 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             }
         } catch (Exception ex) {
             Logger.printException(() -> "KeywordContentFilter.onComponentHostLayout failure", ex);
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private static void attachBannerTouchHandlerIfNeeded(ComponentHost host) {
+        TextContent tc = host.getTextContent();
+        if (tc == null) return;
+        Spannable bannerSpannable = null;
+        for (CharSequence item : tc.getTextItems()) {
+            if (item != null && item.toString().contains(SUBTITLE_BANNER_START_MARKER)) {
+                if (item instanceof Spannable sp) {
+                    decorateSubtitleBannerSpans(sp);
+                    bannerSpannable = sp;
+                }
+                break;
+            }
+        }
+        if (bannerSpannable == null || touchHookedBannerHosts.containsKey(host)) {
+            return;
+        }
+        touchHookedBannerHosts.put(host, Boolean.TRUE);
+
+        host.setOnTouchListener(new View.OnTouchListener() {
+            @Nullable
+            private SubtitleTimestampClickableSpan pressedSpan;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                try {
+                    int action = event.getActionMasked();
+                    if (action == MotionEvent.ACTION_DOWN) {
+                        pressedSpan = findTappedTimestampSpan(host, event.getX(), event.getY());
+                        if (pressedSpan != null) {
+                            if (host.getParent() != null) {
+                                host.getParent().requestDisallowInterceptTouchEvent(true);
+                            }
+                            return true;
+                        }
+                        return false;
+                    }
+                    if (pressedSpan != null) {
+                        if (action == MotionEvent.ACTION_UP) {
+                            SubtitleTimestampClickableSpan hit =
+                                    findTappedTimestampSpan(host, event.getX(), event.getY());
+                            SubtitleTimestampClickableSpan toTrigger = hit != null ? hit : pressedSpan;
+                            pressedSpan = null;
+                            toTrigger.onClick(host);
+                        } else if (action == MotionEvent.ACTION_CANCEL) {
+                            pressedSpan = null;
+                        }
+                        return true;
+                    }
+                } catch (Exception ignored) {
+                    pressedSpan = null;
+                }
+                return false;
+            }
+        });
+    }
+
+    @Nullable
+    private static SubtitleTimestampClickableSpan findTappedTimestampSpan(ComponentHost host,
+                                                                          float touchX, float touchY) {
+        List<Drawable> drawables = new ArrayList<>();
+        try {
+            findMountedTextDrawables(host, drawables);
+        } catch (Exception ignored) {
+        }
+        for (int i = 0, size = drawables.size(); i < size; i++) {
+            Drawable d = drawables.get(i);
+            if (!(d instanceof TextContent tc)) continue;
+            Spanned targetSpanned = null;
+            for (CharSequence item : tc.getTextItems()) {
+                if (item instanceof Spanned sp && item.toString().contains(SUBTITLE_BANNER_START_MARKER)) {
+                    targetSpanned = sp;
+                    break;
+                }
+            }
+            if (targetSpanned == null) continue;
+
+            Layout layout = extractLayoutFromTextDrawable(d);
+            if (layout == null) continue;
+
+            Rect bounds = d.getBounds();
+            int localX = Math.round(touchX) - bounds.left;
+            int localY = Math.round(touchY) - bounds.top;
+            if (localY < 0 || localY > layout.getHeight() || localX < 0 || localX > layout.getWidth()) {
+                continue;
+            }
+            int line = layout.getLineForVertical(localY);
+            int offset = layout.getOffsetForHorizontal(line, localX);
+            // Allow a small +/- 1 character tolerance around the tapped offset
+            for (int delta : new int[]{0, -1, 1}) {
+                int check = Math.max(0, Math.min(targetSpanned.length(), offset + delta));
+                SubtitleTimestampClickableSpan[] spans =
+                        targetSpanned.getSpans(check, check, SubtitleTimestampClickableSpan.class);
+                if (spans != null && spans.length > 0) {
+                    return spans[0];
+                }
+            }
+        }
+        return null;
+    }
+
+    @Nullable
+    private static Layout extractLayoutFromTextDrawable(Drawable drawable) {
+        try {
+            for (Class<?> type = drawable.getClass();
+                 type != null && !type.getName().startsWith("android.");
+                 type = type.getSuperclass()) {
+                for (Field field : type.getDeclaredFields()) {
+                    if (Modifier.isStatic(field.getModifiers())) continue;
+                    if (Layout.class.isAssignableFrom(field.getType())) {
+                        field.setAccessible(true);
+                        Object val = field.get(drawable);
+                        if (val instanceof Layout layout) {
+                            return layout;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private static void findMountedTextDrawables(ComponentHost host, List<Drawable> out) throws Exception {
+        Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        List<Object> level = new ArrayList<>();
+        addInstanceFieldValues(host, ComponentHost.class, level);
+
+        for (int depth = 1; depth <= 4 && !level.isEmpty(); depth++) {
+            List<Object> next = new ArrayList<>();
+            for (Object obj : level) {
+                if (obj == null || obj instanceof View || obj instanceof Context
+                        || obj instanceof CharSequence || obj instanceof Number
+                        || obj instanceof Class || !visited.add(obj)) {
+                    continue;
+                }
+                if (visited.size() > 600) return;
+                if (obj instanceof Drawable drawable) {
+                    if (drawable instanceof TextContent && drawable.getCallback() == host
+                            && !out.contains(drawable)) {
+                        out.add(drawable);
+                    }
+                } else if (obj instanceof Object[] arr) {
+                    next.addAll(Arrays.asList(arr));
+                } else if (obj instanceof Iterable<?> it) {
+                    for (Object item : it) next.add(item);
+                } else if (obj instanceof SparseArray<?> sa) {
+                    for (int i = 0, s = sa.size(); i < s; i++) next.add(sa.valueAt(i));
+                } else if (!obj.getClass().isArray()) {
+                    for (Class<?> t = obj.getClass();
+                         t != null && !t.getName().startsWith("java.") && !t.getName().startsWith("android.");
+                         t = t.getSuperclass()) {
+                        addInstanceFieldValues(obj, t, next);
+                    }
+                }
+            }
+            level = next;
+        }
+    }
+
+    private static void addInstanceFieldValues(Object object, Class<?> type, List<Object> values) throws Exception {
+        for (Field field : type.getDeclaredFields()) {
+            if (Modifier.isStatic(field.getModifiers()) || field.getType().isPrimitive()) {
+                continue;
+            }
+            field.setAccessible(true);
+            values.add(field.get(object));
         }
     }
 

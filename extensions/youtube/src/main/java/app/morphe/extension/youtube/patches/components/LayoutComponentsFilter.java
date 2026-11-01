@@ -1397,6 +1397,7 @@ public final class LayoutComponentsFilter extends Filter {
      * Injection point.
      */
     public static void hideChaptersTimelineButton(View view) {
+        KeywordContentFilter.onPlayerTimeBarViewCreated(view);
         if (view != null && Settings.HIDE_CHAPTERS_TIMELINE_BUTTON.get()) {
             Utils.hideViewByLayoutParams(view);
             view.setVisibility(View.GONE);
@@ -1410,6 +1411,7 @@ public final class LayoutComponentsFilter extends Filter {
      * of inside the entry point button hidden by {@link #hideChaptersTimelineButton(View)}.
      */
     public static void hideChapterTitle(View view) {
+        KeywordContentFilter.onPlayerTimeBarViewCreated(view);
         if (view == null || !Settings.HIDE_CHAPTERS_TIMELINE_BUTTON.get()) {
             return;
         }
