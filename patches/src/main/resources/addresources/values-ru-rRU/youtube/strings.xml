@@ -1763,4 +1763,7 @@ AVC (H.264)
     <string name="morphe_stage_comments_pinned_by">Закреплено пользователем %1$s</string>
     <string name="morphe_stage_comments_hearted_by">Понравилось автору %1$s</string>
     <string name="morphe_stage_comments_replies_count">Ответы (%1$s)</string>
+    <string name="morphe_stage_comments_actions_category_title">Управление и сброс</string>
+    <string name="morphe_stage_comments_about_category_title">Как пользоваться</string>
+    <string name="morphe_stage_comments_about_summary">Зажмите строку «Введите комментарий...» под видео для создания stage-комментария, зажмите любой обычный комментарий для добавления к нему stage-ответа или выдачи верификации его автору, либо зажмите шапку любого канала для выбора значка верификации.</string>
 </resources>

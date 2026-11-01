@@ -1926,4 +1926,7 @@ Automatic recording is optional. It stops in incognito or when the account chang
     <string name="morphe_stage_comments_pinned_by">Pinned by %1$s</string>
     <string name="morphe_stage_comments_hearted_by">Liked by %1$s</string>
     <string name="morphe_stage_comments_replies_count">%1$s replies</string>
+    <string name="morphe_stage_comments_actions_category_title">Management and reset</string>
+    <string name="morphe_stage_comments_about_category_title">How to use</string>
+    <string name="morphe_stage_comments_about_summary">Long-press the comment input bar under any video to create a stage comment, long-press any real comment to attach a stage reply or verify its author, or long-press a channel header to toggle its verification badge.</string>
 </resources>
