@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-10-31T18:21:10",
-  "description": "## [1.0.6](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.5...v1.0.6) (2026-10-31)\n\n### 🐛 Bug Fixes\n\n* **youtube:** inject subtitle matches into description protobuf via hookElement ([fe76efd](https://github.com/sk1nnnny/morphe-patches/commit/fe76efdb6ae4b405f5342322a97f7bf2a797113c))",
-  "download_url": "https://github.com/sk1nnnny/morphe-patches/releases/download/v1.0.6/patches-1.0.6.mpp",
+  "created_at": "2026-11-01T01:42:35",
+  "description": "## [1.1.0](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.6...v1.1.0) (2026-11-01)\n\n### 🐛 Bug Fixes\n\n* **youtube:** use Dim.dp() and ThemeUtils.getAppBackgroundColor() in KeywordContentFilter ([84b80a0](https://github.com/sk1nnnny/morphe-patches/commit/84b80a0bead96554afea9c0b7096910dd6411dac))\n\n### ✨ New Features\n\n* **youtube:** add player overlay subtitle chip and interactive banner card ([3e0e977](https://github.com/sk1nnnny/morphe-patches/commit/3e0e977b8231f9aaa5f9f61d7fb466ffb3232a39))",
+  "download_url": "https://github.com/sk1nnnny/morphe-patches/releases/download/v1.1.0/patches-1.1.0.mpp",
   "signature_download_url": "",
-  "version": "1.0.6"
+  "version": "1.1.0"
 }

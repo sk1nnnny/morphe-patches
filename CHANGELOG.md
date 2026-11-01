@@ -1,3 +1,13 @@
+## [1.1.0](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.6...v1.1.0) (2026-11-01)
+
+### 🐛 Bug Fixes
+
+* **youtube:** use Dim.dp() and ThemeUtils.getAppBackgroundColor() in KeywordContentFilter ([84b80a0](https://github.com/sk1nnnny/morphe-patches/commit/84b80a0bead96554afea9c0b7096910dd6411dac))
+
+### ✨ New Features
+
+* **youtube:** add player overlay subtitle chip and interactive banner card ([3e0e977](https://github.com/sk1nnnny/morphe-patches/commit/3e0e977b8231f9aaa5f9f61d7fb466ffb3232a39))
+
 ## [1.0.6](https://github.com/sk1nnnny/morphe-patches/compare/v1.0.5...v1.0.6) (2026-10-31)
 
 ### 🐛 Bug Fixes
