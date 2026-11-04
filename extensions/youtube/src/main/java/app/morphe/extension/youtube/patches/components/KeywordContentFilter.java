@@ -902,7 +902,13 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                     MatchDetails detail = matchedClauses.get(j);
                     debugMatchedTextMap.put(detail.matchedText(), detail);
                 }
-                recordMatchLog(source, primary.matchedWord(), primary.matchedText(),
+                String logText = primary.matchedText();
+                String firstTitle = searchableTexts.get(0);
+                if (source != Source.COMMENTS && !firstTitle.equals(logText)
+                        && !logText.contains(firstTitle)) {
+                    logText = firstTitle + " (" + logText + ")";
+                }
+                recordMatchLog(source, primary.matchedWord(), logText,
                         rule.displayRule, videoId, debug);
                 if (!debug) {
                     recordHide(source, videoId);
@@ -995,14 +1001,20 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 + " | Text: '" + matchedText + "'"
                 + " | Source: " + source);
 
-        String dedupKey = source + "|" + matchedText + "|" + matchedWord;
+        String dedupId = (videoId != null && !videoId.isEmpty() && source != Source.COMMENTS)
+                ? videoId
+                : matchedText;
+        String dedupKey = source + "|" + dedupId + "|" + matchedWord;
         synchronized (recentMatchLogs) {
             if (!recentLoggedKeys.add(dedupKey)) {
                 return;
             }
             if (recentMatchLogs.size() >= MAX_MATCH_LOG_ENTRIES) {
                 MatchLogEntry removed = recentMatchLogs.removeLast();
-                String removedKey = removed.source() + "|" + removed.matchedText() + "|" + removed.matchedWord();
+                String remId = (removed.videoId() != null && !removed.videoId().isEmpty() && removed.source() != Source.COMMENTS)
+                        ? removed.videoId()
+                        : removed.matchedText();
+                String removedKey = removed.source() + "|" + remId + "|" + removed.matchedWord();
                 recentLoggedKeys.remove(removedKey);
             }
             recentMatchLogs.addFirst(new MatchLogEntry(
@@ -1168,9 +1180,10 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                         }
                     }
                     collectChannelHandlesRecursive(root, videoId, results, seen);
+                } else {
+                    collectAttributedCommentTexts(root, videoId, results, seen);
+                    collectReadableProtoTexts(root, videoId, results, seen);
                 }
-                collectAttributedCommentTexts(root, videoId, results, seen);
-                collectReadableProtoTexts(root, videoId, results, seen);
             }
         }
 
@@ -1307,9 +1320,11 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return null;
         }
 
+        String lowerText = text.toLowerCase(Locale.ROOT);
         if (COMMON_BUFFER_STRINGS.contains(text)
                 || TECHNICAL_SINGLE_WORDS.contains(text)
-                || COMMENT_UI_LABELS.contains(text.toLowerCase(Locale.ROOT))) {
+                || COMMENT_UI_LABELS.contains(lowerText)
+                || isYouTubeSystemBoilerplate(lowerText)) {
             return null;
         }
 
@@ -1458,6 +1473,17 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             }
         }
         return false;
+    }
+
+    private static boolean isYouTubeSystemBoilerplate(String lowerText) {
+        return lowerText.contains("ии может ошибаться")
+                || lowerText.contains("перепроверяйте ответы")
+                || lowerText.contains("ai can make mistakes")
+                || lowerText.contains("double-check responses")
+                || lowerText.equals("спросить")
+                || lowerText.equals("спросить о видео")
+                || lowerText.equals("ask about this video")
+                || lowerText.contains("ответы сгенерированы ии");
     }
 
     private static boolean isDurationOrBadgeText(String text) {
