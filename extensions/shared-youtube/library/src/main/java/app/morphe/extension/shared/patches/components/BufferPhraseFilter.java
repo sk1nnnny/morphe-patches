@@ -153,6 +153,8 @@ public abstract class BufferPhraseFilter extends Filter {
      */
     private final StringTrieSearch exceptions = new StringTrieSearch(
             "metadata.e",
+            "expandable_metadata",
+            "inline_expander",
             "thumbnail.e",
             "avatar.e",
             "overflow_button.e"
@@ -582,9 +584,9 @@ public abstract class BufferPhraseFilter extends Filter {
 
     /** Byte sequence that precedes the video ID inside the buffer's thumbnail URL. */
     private static final byte[] THUMBNAIL_URL_PREFIX =
-            "https://i.ytimg.com/vi/".getBytes(StandardCharsets.US_ASCII);
+            ".ytimg.com/vi/".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] THUMBNAIL_WEBP_URL_PREFIX =
-            "https://i.ytimg.com/vi_webp/".getBytes(StandardCharsets.US_ASCII);
+            ".ytimg.com/vi_webp/".getBytes(StandardCharsets.US_ASCII);
 
     /**
      * @return the first video ID found in the buffer via the thumbnail URL prefix,

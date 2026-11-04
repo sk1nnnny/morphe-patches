@@ -245,7 +245,11 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             "oar3",
             "sans-serif",
             "sans-serif-medium",
-            "Roboto"
+            "Roboto",
+            "dismiss",
+            "expand",
+            "collapse",
+            "PAfeedback_genai"
     );
 
     /** Localized UI action labels inside comments that should never be treated as comment body text. */
@@ -527,7 +531,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         }
     }
 
-    private record DebugRuleSpan(String matchedWord, String matchedText, String ruleDisplay) {}
+    private record DebugRuleSpan(String matchedWord, String matchedText, String ruleDisplay, String componentName) {}
 
     private static boolean phraseUsesWholeWordSyntax(String phrase) {
         return phrase.length() >= 2 && phrase.startsWith("\"") && phrase.endsWith("\"");
@@ -864,7 +868,8 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             String activeVideoId = VideoInformation.getVideoId();
             String videoId = activeVideoId.isEmpty() ? null : activeVideoId;
             List<String> commentTexts = extractCommentTexts(buffer, videoId);
-            String matchedWord = evaluateRulesAndRecord(commentTexts, rules, Source.COMMENTS, videoId, debug);
+            String componentName = extractRootComponentName(path);
+            String matchedWord = evaluateRulesAndRecord(commentTexts, rules, Source.COMMENTS, videoId, componentName, debug);
 
             CommentDecision decision = new CommentDecision(
                     path.toString(),
@@ -877,19 +882,35 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             return matchedWord;
         }
 
+        if (path != null && (Utils.contains(path, "expandable_metadata")
+                || Utils.contains(path, "inline_expander"))) {
+            return null;
+        }
+
         String videoId = extractVideoIdFromBuffer(buffer);
         List<String> searchableTexts = extractSearchableTexts(buffer, accessibility, videoId);
         if (searchableTexts.isEmpty()) {
             return null;
         }
 
+        String componentName = extractRootComponentName(path);
         Source source = detectSource(matchedGroup, contextInterface);
-        return evaluateRulesAndRecord(searchableTexts, rules, source, videoId, debug);
+        return evaluateRulesAndRecord(searchableTexts, rules, source, videoId, componentName, debug);
+    }
+
+    private static String extractRootComponentName(@Nullable CharSequence path) {
+        if (path == null || path.length() == 0) return "";
+        String s = path.toString();
+        int pipe = s.indexOf('|');
+        String head = pipe > 0 ? s.substring(0, pipe) : s;
+        int dash = head.indexOf('-');
+        return dash > 0 ? head.substring(0, dash) : head;
     }
 
     @Nullable
     private String evaluateRulesAndRecord(List<String> searchableTexts, List<KeywordRule> rules,
-                                          Source source, @Nullable String videoId, boolean debug) {
+                                          Source source, @Nullable String videoId,
+                                          String componentName, boolean debug) {
         if (searchableTexts.isEmpty()) {
             return null;
         }
@@ -908,11 +929,12 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                         && !logText.contains(firstTitle)) {
                     logText = firstTitle + " (" + logText + ")";
                 }
+                if (componentName != null && !componentName.isEmpty()) {
+                    logText = "[" + componentName + "] " + logText;
+                }
                 recordMatchLog(source, primary.matchedWord(), logText,
                         rule.displayRule, videoId, debug);
-                if (!debug) {
-                    recordHide(source, videoId);
-                }
+                recordHide(source, videoId, firstTitle);
                 return primary.matchedWord();
             }
         }
@@ -1156,44 +1178,57 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         List<String> results = new ArrayList<>();
         Set<String> seen = new HashSet<>();
 
-        if (buffer != null && buffer.length > 0) {
-            List<ProtoNode> root = ProtoNode.parse(buffer);
-            if (root != null) {
-                List<ProtoNode> lockupMetadataNodes = new ArrayList<>();
-                findNodesByFieldNumber(root, LOCKUP_METADATA_VIEW_MODEL_FIELD_NUMBER, lockupMetadataNodes);
-
-                if (!lockupMetadataNodes.isEmpty()) {
-                    for (int i = 0, size = lockupMetadataNodes.size(); i < size; i++) {
-                        ProtoNode metadataNode = lockupMetadataNodes.get(i);
-                        if (metadataNode.children == null) continue;
-                        for (int j = 0, cSize = metadataNode.children.size(); j < cSize; j++) {
-                            ProtoNode child = metadataNode.children.get(j);
-                            int fn = child.getFieldNumber();
-                            if (fn == LOCKUP_METADATA_TITLE_FIELD_NUMBER
-                                    || fn == LOCKUP_METADATA_CONTENT_FIELD_NUMBER) {
-                                if (child.isText()) {
-                                    addFilteredUserText(child.getText(), videoId, results, seen);
-                                } else if (child.children != null) {
-                                    collectReadableProtoTexts(child.children, videoId, results, seen);
-                                }
-                            }
-                        }
-                    }
-                    collectChannelHandlesRecursive(root, videoId, results, seen);
-                } else {
-                    collectAttributedCommentTexts(root, videoId, results, seen);
-                    collectReadableProtoTexts(root, videoId, results, seen);
-                }
-            }
-        }
-
+        // 1. Accessibility label of the video card is always the primary visible title + channel + metadata
+        //    and never includes the hidden expandable_metadata.eml (PAfeedback_genai) AI summary block.
         if (accessibility != null && !accessibility.isEmpty()) {
             int pipeIndex = accessibility.indexOf('|');
             String a11yText = pipeIndex >= 0 ? accessibility.substring(pipeIndex + 1) : accessibility;
             addFilteredUserText(a11yText, videoId, results, seen);
         }
 
+        if (buffer != null && buffer.length > 0) {
+            List<ProtoNode> root = ProtoNode.parse(buffer);
+            if (root != null) {
+                // Structurally prune any embedded expandable_metadata.eml / inline_expander / PAfeedback_genai
+                // child element before extracting readable texts from the card buffer.
+                collectReadableProtoTexts(root, videoId, results, seen);
+                collectChannelHandlesRecursive(root, videoId, results, seen);
+            }
+        }
+
         return results;
+    }
+
+    /**
+     * Checks whether a ProtoNode subtree is the embedded {@code expandable_metadata.eml} /
+     * {@code inline_expander} / {@code PAfeedback_genai} AI video summary attachment inside
+     * {@code video_lockup_with_attachment.eml}.
+     * The main video lockup branch always contains the video thumbnail ({@code thumbnail.e} /
+     * {@code ytimg.com}), whereas the attached AI summary component contains
+     * {@code expandable_metadata} / {@code PAfeedback_genai} and has no video thumbnail.
+     */
+    private static boolean isExpandableSummaryAttachmentSubtree(ProtoNode node) {
+        if (node.children == null) {
+            return false;
+        }
+        boolean hasSummaryComponentMarker = false;
+        boolean hasMainVideoLockupMarker = false;
+        List<ProtoNode> textNodes = ProtoNode.textNodes(node.children);
+        for (int i = 0, size = textNodes.size(); i < size; i++) {
+            String t = textNodes.get(i).getText();
+            if (t.contains("PAfeedback_genai")
+                    || t.startsWith("expandable_metadata.")
+                    || t.startsWith("cell_expandable_metadata.")
+                    || t.startsWith("inline_expander.")) {
+                hasSummaryComponentMarker = true;
+            }
+            if (t.startsWith("video_lockup_thumbnail.")
+                    || t.startsWith("thumbnail.e")
+                    || t.contains("ytimg.com/vi")) {
+                hasMainVideoLockupMarker = true;
+            }
+        }
+        return hasSummaryComponentMarker && !hasMainVideoLockupMarker;
     }
 
     private static void findNodesByFieldNumber(List<ProtoNode> nodes, int targetField, List<ProtoNode> out) {
@@ -1249,6 +1284,9 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             }
 
             if (node.children != null) {
+                if (isExpandableSummaryAttachmentSubtree(node)) {
+                    continue;
+                }
                 collectReadableProtoTexts(node.children, videoId, out, seen);
             } else if (fieldNumber == TEXT_CONTENT_FIELD_NUMBER) {
                 String multiLine = decodeGenuineMultiLineText(node);
@@ -1478,6 +1516,8 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
     private static boolean isYouTubeSystemBoilerplate(String lowerText) {
         return lowerText.contains("ии может ошибаться")
                 || lowerText.contains("перепроверяйте ответы")
+                || lowerText.contains("краткий пересказ от ии")
+                || lowerText.contains("ai-generated summary")
                 || lowerText.contains("ai can make mistakes")
                 || lowerText.contains("double-check responses")
                 || lowerText.equals("спросить")
@@ -1664,41 +1704,6 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         } finally {
             state.pending = false;
             state.latch.countDown();
-            Utils.runOnMainThread(() -> {
-                updatePlayerOverlayChip();
-                onSubtitleScanCompletedMainThread(videoId, rulesVer, state);
-            });
-        }
-    }
-
-    private static void onSubtitleScanCompletedMainThread(String videoId, int rulesVer,
-                                                          SubtitleScanState state) {
-        try {
-            if (!Settings.HIDE_KEYWORD_CONTENT_CHECK_SUBTITLES.get() || state.items.isEmpty()) {
-                return;
-            }
-            String currentVid = VideoInformation.getStartingOrPlayingVideoId();
-            if (currentVid.isEmpty()) currentVid = VideoInformation.getVideoId();
-            if (currentVid.isEmpty()) currentVid = activeChipVideoId;
-            if (!videoId.equals(currentVid)) {
-                return;
-            }
-
-            try {
-                LithoRelayoutPatch.relayoutOutdatedTexts();
-                LithoRelayoutPatch.remountListViews();
-            } catch (Exception ignored) {
-            }
-
-            String notifyKey = videoId + "|" + rulesVer;
-            if (notifiedSubtitleVideoKeys.add(notifyKey)) {
-                String summary = buildCompactSubtitleSummary(state.items, 2);
-                if (!summary.isEmpty()) {
-                    Utils.showSnackbarLong(str("morphe_hide_keyword_subtitles_inline", summary));
-                }
-            }
-        } catch (Exception ex) {
-            Logger.printException(() -> "onSubtitleScanCompletedMainThread failure", ex);
         }
     }
 
@@ -3093,22 +3098,25 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                         SubtitleScanState state = ensureSubtitleScanStarted(
                                 vid, filter.currentRulesVersion, filter.parsedRules);
                         if (!state.pending && !state.items.isEmpty()) {
-                            String summary = buildCompactSubtitleSummary(state.items, 1);
-                            if (!summary.isEmpty()) {
-                                boolean dark = ((ThemeUtils.getAppBackgroundColor() & 0x00FFFFFF) < 0x00808080);
-                                int accentColor = dark ? 0xFF3EA6FF : 0xFF065FD4;
-                                String teaserPrefix = SUBTITLE_TEASER_MARKER + "\u00A0 " + summary + "  ·  ";
-                                SpannableStringBuilder teaserBuilder = new SpannableStringBuilder(teaserPrefix);
-                                int iconPos = SUBTITLE_TEASER_MARKER.length();
-                                teaserBuilder.setSpan(new SubtitleVectorIconSpan(accentColor),
-                                        iconPos, iconPos + 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                                teaserBuilder.setSpan(new ForegroundColorSpan(accentColor),
-                                        iconPos + 2, iconPos + 2 + summary.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                                teaserBuilder.setSpan(new StyleSpan(Typeface.BOLD),
-                                        iconPos + 2, iconPos + 2 + summary.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                                teaserBuilder.append(original);
-                                return new SpannableString(teaserBuilder);
-                            }
+                            SubtitleMatchItem firstItem = state.items.get(0);
+                            String firstTs = firstItem.timestamps.get(0);
+                            String shortWord = firstItem.matchedWord.length() > 12
+                                    ? firstItem.matchedWord.substring(0, 11) + "…"
+                                    : firstItem.matchedWord;
+                            String badgeText = shortWord + " " + firstTs;
+                            boolean dark = ((ThemeUtils.getAppBackgroundColor() & 0x00FFFFFF) < 0x00808080);
+                            int accentColor = dark ? 0xFF3EA6FF : 0xFF065FD4;
+                            String teaserPrefix = SUBTITLE_TEASER_MARKER + "\u00A0 " + badgeText + " · ";
+                            SpannableStringBuilder teaserBuilder = new SpannableStringBuilder(teaserPrefix);
+                            int iconPos = SUBTITLE_TEASER_MARKER.length();
+                            teaserBuilder.setSpan(new SubtitleVectorIconSpan(accentColor),
+                                    iconPos, iconPos + 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                            teaserBuilder.setSpan(new ForegroundColorSpan(accentColor),
+                                    iconPos + 2, iconPos + 2 + badgeText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                            teaserBuilder.setSpan(new StyleSpan(Typeface.BOLD),
+                                    iconPos + 2, iconPos + 2 + badgeText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                            teaserBuilder.append(original);
+                            return new SpannableString(teaserBuilder);
                         }
                     }
                 }
@@ -3182,7 +3190,10 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                 }
             }
 
-            builder.setSpan(new DebugRuleSpan(matchedWord, cleaned, matchedRuleDisplay),
+            String compName = contextInterface != null
+                    ? extractRootComponentName(contextInterface.patch_getPathBuilder())
+                    : "";
+            builder.setSpan(new DebugRuleSpan(matchedWord, cleaned, matchedRuleDisplay, compName),
                     0, builder.length(), Spanned.SPAN_INCLUSIVE_INCLUSIVE);
             return new SpannableString(builder);
         } catch (Exception ex) {
@@ -3484,7 +3495,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
                         overlay = new DebugCardOverlay(root);
                         debugOverlays.put(root, overlay);
                     }
-                    overlay.bind(root);
+                    overlay.bind(root, matchedSpan);
                 } else {
                     detachDebugOverlay(root);
                 }
@@ -3591,19 +3602,34 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
 
         private final Paint scrimPaint = new Paint();
         private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint badgeBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint badgeTextPaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         private final RectF cardRect = new RectF();
+        private final RectF badgeRect = new RectF();
         private final float density;
         private boolean added;
+        private String badgeLabel = "";
 
         DebugCardOverlay(ComponentHost host) {
             density = host.getResources().getDisplayMetrics().density;
             borderPaint.setColor(BORDER_COLOR);
             borderPaint.setStyle(Paint.Style.STROKE);
             borderPaint.setStrokeWidth(1.5f * density);
+            badgeBgPaint.setColor(0xD91E1E1E);
+            badgeBgPaint.setStyle(Paint.Style.FILL);
+            badgeTextPaint.setColor(0xFFFF8A80);
+            badgeTextPaint.setTextSize(10.5f * density);
+            badgeTextPaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
         }
 
-        void bind(ComponentHost host) {
+        void bind(ComponentHost host, @Nullable DebugRuleSpan span) {
             setBounds(0, 0, host.getWidth(), host.getHeight());
+            if (span != null) {
+                String comp = span.componentName() != null && !span.componentName().isEmpty()
+                        ? span.componentName() + " · "
+                        : "";
+                badgeLabel = comp + "«" + span.matchedWord() + "»";
+            }
             if (!added) {
                 host.getOverlay().add(this);
                 added = true;
@@ -3632,6 +3658,20 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             cardRect.inset(strokeInset, strokeInset);
             float cornerRadius = 8f * density;
             canvas.drawRoundRect(cardRect, cornerRadius, cornerRadius, borderPaint);
+
+            if (!badgeLabel.isEmpty()) {
+                float padH = 6f * density;
+                float padV = 3f * density;
+                float textW = badgeTextPaint.measureText(badgeLabel);
+                Paint.FontMetrics fm = badgeTextPaint.getFontMetrics();
+                float textH = fm.descent - fm.ascent;
+                float left = bounds.left + 8f * density;
+                float top = bounds.top + 8f * density;
+                badgeRect.set(left, top, Math.min(bounds.right - 8f * density, left + textW + padH * 2), top + textH + padV * 2);
+                canvas.drawRoundRect(badgeRect, 4f * density, 4f * density, badgeBgPaint);
+                canvas.drawRoundRect(badgeRect, 4f * density, 4f * density, borderPaint);
+                canvas.drawText(badgeLabel, left + padH, top + padV - fm.ascent, badgeTextPaint);
+            }
         }
 
         @Override
@@ -3655,11 +3695,14 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
         Utils.showSnackbarLong(str("morphe_hide_keyword_toast_invalid_broad", matched));
     }
 
-    private void recordHide(Source source, @Nullable String extractedVideoId) {
+    private void recordHide(Source source, @Nullable String extractedVideoId, @Nullable String fallbackText) {
         String videoId = source == Source.COMMENTS
                 ? (VideoInformation.getVideoId().isEmpty() ? null : VideoInformation.getVideoId())
                 : extractedVideoId;
-        if (videoId == null) return;
+        if (videoId == null || videoId.isEmpty()) {
+            if (fallbackText == null || fallbackText.isEmpty()) return;
+            videoId = "h_" + Integer.toHexString(fallbackText.hashCode());
+        }
 
         if (sharedTracker.recordHide(videoId, source, System.currentTimeMillis())) {
             LongSetting counter = allTimeCounterFor(source);

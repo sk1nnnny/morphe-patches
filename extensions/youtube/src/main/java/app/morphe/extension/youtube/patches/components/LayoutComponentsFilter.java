@@ -1406,7 +1406,6 @@ public final class LayoutComponentsFilter extends Filter {
             Utils.hideViewByLayoutParams(view);
             view.setVisibility(View.GONE);
         }
-        KeywordContentFilter.onPlayerTimeBarViewCreated(view);
     }
 
     /**
@@ -1430,7 +1429,6 @@ public final class LayoutComponentsFilter extends Filter {
                 Logger.printException(() -> "hideChapterTitle failure", ex);
             }
         }
-        KeywordContentFilter.onPlayerTimeBarViewCreated(view);
     }
 
     /**
