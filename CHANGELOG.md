@@ -1,3 +1,10 @@
+## [1.2.2](https://github.com/sk1nnnny/morphe-patches/compare/v1.2.1...v1.2.2) (2026-11-04)
+
+### 🐛 Bug Fixes
+
+* **youtube:** filter channel videos and redesign native subtitle indicators ([dfc59c8](https://github.com/sk1nnnny/morphe-patches/commit/dfc59c84991dec50854f02ef4e6d71b00301d11c))
+* **youtube:** use Utils.showSnackbarLong for subtitle match notification ([b50c68e](https://github.com/sk1nnnny/morphe-patches/commit/b50c68e307ffef6ff3c198414813666a0bf24ee2))
+
 ## [1.2.1](https://github.com/sk1nnnny/morphe-patches/compare/v1.2.0...v1.2.1) (2026-11-01)
 
 ### 🐛 Bug Fixes
