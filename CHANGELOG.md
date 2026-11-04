@@ -1,3 +1,9 @@
+## [1.2.3](https://github.com/sk1nnnny/morphe-patches/compare/v1.2.2...v1.2.3) (2026-11-04)
+
+### 🐛 Bug Fixes
+
+* **youtube:** ignore built-in Gemini disclaimer in video buffers and dedup log by videoId ([59d4bb0](https://github.com/sk1nnnny/morphe-patches/commit/59d4bb01cd8d7d1820bc72d65b471469bd22f3df))
+
 ## [1.2.2](https://github.com/sk1nnnny/morphe-patches/compare/v1.2.1...v1.2.2) (2026-11-04)
 
 ### 🐛 Bug Fixes
