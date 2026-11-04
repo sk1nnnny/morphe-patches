@@ -122,6 +122,9 @@ public abstract class BufferPhraseFilter extends Filter {
             "lockup.e",
             "grid_video_wrapper.e",
             "compact_video.e",
+            "cell_video.e",
+            "channel_video_player.e",
+            "video_card.e",
             "inline_shorts",
             "shorts_video_cell",
             "shorts_pivot_item.e"
@@ -135,7 +138,10 @@ public abstract class BufferPhraseFilter extends Filter {
             null,
             "modern_type_shelf_header_content.e",
             "shorts_lockup_cell.e", // Part of 'shorts_shelf_carousel.e'
-            "video_card.e" // Shorts that appear in a horizontal shelf.
+            "video_card.e", // Shorts that appear in a horizontal shelf.
+            "compact_video.e",
+            "cell_video.e",
+            "grid_video_wrapper.e"
     );
 
     /**

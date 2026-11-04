@@ -100,6 +100,11 @@ public final class LayoutComponentsFilter extends Filter {
         browseId = "";
     }
 
+    public static boolean isChannelBrowsePage() {
+        String id = browseId;
+        return id != null && (id.startsWith("UC") || id.contains("channel"));
+    }
+
     private final StringTrieSearch exceptions = new StringTrieSearch();
 
     private final StringFilterGroup channelProfileSubscribeButton;
@@ -1397,11 +1402,11 @@ public final class LayoutComponentsFilter extends Filter {
      * Injection point.
      */
     public static void hideChaptersTimelineButton(View view) {
-        KeywordContentFilter.onPlayerTimeBarViewCreated(view);
         if (view != null && Settings.HIDE_CHAPTERS_TIMELINE_BUTTON.get()) {
             Utils.hideViewByLayoutParams(view);
             view.setVisibility(View.GONE);
         }
+        KeywordContentFilter.onPlayerTimeBarViewCreated(view);
     }
 
     /**
@@ -1411,23 +1416,21 @@ public final class LayoutComponentsFilter extends Filter {
      * of inside the entry point button hidden by {@link #hideChaptersTimelineButton(View)}.
      */
     public static void hideChapterTitle(View view) {
-        KeywordContentFilter.onPlayerTimeBarViewCreated(view);
-        if (view == null || !Settings.HIDE_CHAPTERS_TIMELINE_BUTTON.get()) {
-            return;
-        }
+        if (view != null && Settings.HIDE_CHAPTERS_TIMELINE_BUTTON.get()) {
+            try {
+                Utils.hideViewByLayoutParams(view);
+                view.setVisibility(View.GONE);
 
-        try {
-            Utils.hideViewByLayoutParams(view);
-            view.setVisibility(View.GONE);
-
-            // The chip around the title is a separate parent view.
-            if (CONTAINER_ID != 0 && view.getParent() instanceof View parent && parent.getId() == CONTAINER_ID) {
-                Utils.hideViewByLayoutParams(parent);
-                parent.setVisibility(View.GONE);
+                // The chip around the title is a separate parent view.
+                if (CONTAINER_ID != 0 && view.getParent() instanceof View parent && parent.getId() == CONTAINER_ID) {
+                    Utils.hideViewByLayoutParams(parent);
+                    parent.setVisibility(View.GONE);
+                }
+            } catch (Exception ex) {
+                Logger.printException(() -> "hideChapterTitle failure", ex);
             }
-        } catch (Exception ex) {
-            Logger.printException(() -> "hideChapterTitle failure", ex);
         }
+        KeywordContentFilter.onPlayerTimeBarViewCreated(view);
     }
 
     /**

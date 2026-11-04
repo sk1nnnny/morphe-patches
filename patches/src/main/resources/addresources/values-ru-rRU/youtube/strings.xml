@@ -303,6 +303,7 @@ Second \"item\" text"</string>
   <string name="morphe_hide_keyword_content_home_title">Скрыть видео на \"Главной\" по ключевым словам</string>
   <string name="morphe_hide_keyword_content_search_title">Скрыть результаты поиска по ключевым словам</string>
   <string name="morphe_hide_keyword_content_subscriptions_title">Скрыть видео в \"Подписках\" по ключевым словам</string>
+    <string name="morphe_hide_keyword_content_channel_title">Скрыть видео на страницах каналов по ключевым словам</string>
   <string name="morphe_hide_keyword_content_use_and_operator_title">Использовать оператор \'AND\' (\'&amp;\')</string>
   <string name="morphe_hide_keyword_content_use_and_operator_summary">Позволяет объединять несколько условий в одной строке через «&amp;», чтобы правило срабатывало только при совпадении всех частей</string>
   <string name="morphe_hide_keyword_content_use_regex_title">Использовать регулярные выражения (Regex)</string>

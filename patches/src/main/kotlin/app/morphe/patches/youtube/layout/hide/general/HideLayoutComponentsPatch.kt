@@ -272,6 +272,7 @@ val hideLayoutComponentsPatch = bytecodePatch(
                     SwitchPreference("morphe_hide_keyword_content_home"),
                     SwitchPreference("morphe_hide_keyword_content_search"),
                     SwitchPreference("morphe_hide_keyword_content_subscriptions"),
+                    SwitchPreference("morphe_hide_keyword_content_channel"),
                     SwitchPreference("morphe_hide_keyword_content_check_subtitles", summary = true),
                     SwitchPreference("morphe_hide_keyword_content_use_and_operator", summary = true),
                     SwitchPreference("morphe_hide_keyword_content_use_regex", summary = true),
