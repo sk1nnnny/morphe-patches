@@ -1668,7 +1668,7 @@ public final class KeywordContentFilter extends BufferPhraseFilter {
             if (notifiedSubtitleVideoKeys.add(notifyKey)) {
                 String summary = buildCompactSubtitleSummary(state.items, 2);
                 if (!summary.isEmpty()) {
-                    Utils.showSnackbar(str("morphe_hide_keyword_subtitles_inline", summary));
+                    Utils.showSnackbarLong(str("morphe_hide_keyword_subtitles_inline", summary));
                 }
             }
         } catch (Exception ex) {
